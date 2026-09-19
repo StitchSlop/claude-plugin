@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "app": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bridge/stitchslop-bridge.mjs", "--lazy"]
+    }
+  }
+}

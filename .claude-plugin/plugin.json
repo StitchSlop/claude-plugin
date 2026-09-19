@@ -1,0 +1,9 @@
+{
+  "name": "stitchslop",
+  "displayName": "Stitch Slop",
+  "description": "Work on the embroidery design open in your Stitch Slop browser tab: see it, describe it, and change it, with every edit one undo step.",
+  "version": "0.1.0",
+  "author": { "name": "Stitch Slop" },
+  "homepage": "https://www.stitchslop.com",
+  "keywords": ["embroidery", "digitizing", "stitchslop", "mcp"]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "stitchslop",
+  "description": "The Stitch Slop plugin: lets your agent work on the embroidery design open in your browser tab.",
+  "owner": {
+    "name": "Stitch Slop"
+  },
+  "plugins": [
+    {
+      "name": "stitchslop",
+      "source": "./",
+      "description": "Work on the embroidery design open in your Stitch Slop browser tab."
+    }
+  ]
+}
