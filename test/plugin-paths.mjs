@@ -47,16 +47,29 @@ function mcp(extraArgs = [], env = {}) {
       try { const m = JSON.parse(line); (m.id === undefined ? notes : inbox).push(m); } catch { junk.push(line); }
     }
   });
-  const request = async (method, params, ms = 20_000) => {
-    const mine = ++id;
-    proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: mine, method, params }) + '\n');
+  const replyTo = async (mine, ms) => {
     for (const until = Date.now() + ms; Date.now() < until; await wait(30)) {
       const hit = inbox.find((m) => m.id === mine);
       if (hit) return hit;
     }
     return null;
   };
+  const request = (method, params, ms = 20_000) => {
+    const mine = ++id;
+    proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: mine, method, params }) + '\n');
+    return replyTo(mine, ms);
+  };
+  /** Several tools/calls in ONE write, so they reach the bridge in one chunk
+   *  and are dispatched in the same tick — the shape of a model's parallel calls
+   *  arriving at a process that is busy. */
+  const callTogether = (calls, ms = 30_000) => {
+    const ids = calls.map(() => ++id);
+    proc.stdin.write(calls.map(([name, args], i) =>
+      JSON.stringify({ jsonrpc: '2.0', id: ids[i], method: 'tools/call', params: { name, arguments: args } }) + '\n').join(''));
+    return ids.map((mine) => replyTo(mine, ms));
+  };
   return {
+    callTogether,
     proc, notes, junk,
     async init() {
       await request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } });
@@ -93,9 +106,15 @@ console.log('\npair');
 const evil = await a.call('pair', { token: 'tok_aaaaaaaaaaaa', origin: 'https://evil.example' });
 ok('pair refuses an origin that is neither production nor loopback', evil?.result?.isError === true && !(await portOpen(8797)));
 
-const pairing = a.call('pair', { token: 'tok_feedfacecafe.', origin: ORIGIN + '/', timeoutSeconds: 20 }, 30_000);
+// In PARALLEL, as a model will: both calls reach ensureTransport while the
+// bridge is still idle, and only one of them may bind.
+const [parallelWait, pairing] = a.callTogether([
+  ['wait_for_connection', { timeoutSeconds: 20 }],
+  ['pair', { token: 'tok_feedfacecafe.', origin: ORIGIN + '/', timeoutSeconds: 20 }],
+]);
 await wait(600);
 ok('pair opens the bridge', await portOpen(8797));
+ok('  ...and a parallel wait_for_connection does not open a second port', !(await portOpen(8798)));
 const t1 = await tab(8797);
 t1.send({ token: 'tok_feedfacecafe' });
 const hello = await t1.next();
@@ -104,6 +123,8 @@ ok('the tab attaches with the token handed to pair', hello?.hello === 'stitchslo
 t1.serve(TOOLS, answer);
 const paired = await pairing;
 ok('pair returns the design, not just "connected"', /1,234 stitches/.test(textOf(paired)) && /Leaf/.test(textOf(paired)), textOf(paired).slice(0, 50));
+ok('  ...and says the token was spent, rather than leaving it to a guess', /token, which is now spent/.test(textOf(paired)));
+ok('the parallel wait returns too', /1,234/.test(textOf(await parallelWait)));
 await wait(200);
 ok('the tab\'s tools are listed', (await a.tools()).includes('scene.render'));
 
@@ -184,7 +205,9 @@ const t4 = await tab(8798);
 t4.send?.({ secret: hello.pairingSecret });
 ok('  ...where the turned-away tab finds it', (await t4.next?.())?.port === 8798);
 t4.serve?.(TOOLS, answer);
-ok('  ...and the parked wait returns', /1,234/.test(textOf(await cWait)));
+const cText = textOf(await cWait);
+ok('  ...and the parked wait returns', /1,234/.test(cText));
+ok('  ...saying the stored pairing got it in, with no token', /stored pairing, so no token was needed/.test(cText));
 
 ok('stdout stayed pure JSON-RPC in every bridge', a.junk.length + b.junk.length + c.junk.length === 0);
 

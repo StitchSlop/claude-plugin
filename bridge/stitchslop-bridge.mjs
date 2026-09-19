@@ -283,6 +283,11 @@ let mode = 'idle';
 let PORT = null;
 let server = null;
 let page = null;            // { send, socket, lastPong } — the one attached tab
+/** How the current tab authenticated: 'token' (and it is now spent) or
+ *  'pairing'. Reported in the greeting, so the agent states it rather than
+ *  guessing — a user once heard "that token may not have been used" about a
+ *  token that had just paired the machine. */
+let attachedBy = null;
 let everConnected = false;
 let idleTimer = null;
 let toolsCache = [];
@@ -422,6 +427,7 @@ function statusBody() {
   return {
     ok: true, connected: !!page, port: PORT, origin: ORIGIN, protocol: PROTOCOL, pid: process.pid,
     paired: secretsFor(ORIGIN).length > 0, tools: toolsCache.map((t) => t.name),
+    attachedBy: page ? attachedBy : null,
     message: page ? 'A Stitch Slop tab is connected.'
       : 'No tab is connected yet. The tab attaches on its own while "Enable Agent Connections" is on.',
   };
@@ -526,6 +532,7 @@ function authenticate(msg, conn) {
 
   // Both verify -> a SECRET handshake: re-issuing would churn a working credential.
   const issued = bySecret ? null : mintPairing(ORIGIN, msg.token);
+  attachedBy = issued ? 'token' : 'pairing';
   if (issued) { armedTokens.delete(msg.token); log(`paired — secret stored in ${PAIRING_FILE}`); }
 
   page = conn;
@@ -623,6 +630,7 @@ async function refreshFollow() {
     if (follow !== f) return;
     if (st.status !== 200 || !st.body?.ok) throw new Error('that bridge no longer accepts this key');
     f.connected = !!st.body.connected;
+    f.attachedBy = st.body.attachedBy ?? null;
     if (!f.connected) { setTools([]); return; }
     const names = (st.body.tools ?? []).join('\n');
     if (names !== toolsCache.map((t) => t.name).join('\n')) {
@@ -647,8 +655,20 @@ function stopFollowing() {
 }
 
 /** Make sure there is a way to reach a tab: follow a bridge that already
- *  exists for this site, or become one. */
-async function ensureTransport({ own = false } = {}) {
+ *  exists for this site, or become one.
+ *
+ *  SERIALISED, because `mode` stays 'idle' across the awaits below. A model
+ *  that calls wait_for_connection and pair in parallel — which models do —
+ *  would otherwise send both through bind(), and the second would open the
+ *  next port: two bridges in one process, one of them unreachable. */
+let transportChain = Promise.resolve();
+function ensureTransport(opts) {
+  const run = transportChain.then(() => ensureTransportNow(opts));
+  transportChain = run.catch(() => {});
+  return run;
+}
+
+async function ensureTransportNow({ own = false } = {}) {
   if (mode === 'host') return;
   if (mode === 'follower') { if (!own) return; stopFollowing(); }
   if (!own) {
@@ -777,8 +797,15 @@ const text = (t, isError = false) => ({ content: [{ type: 'text', text: t }], ..
 
 /** Built from the LIVE document: "three objects, 5,669 stitches" proves the link
  *  works in a way "connected successfully" does not. */
+const AUTH_LINE = {
+  token: 'It paired using the one-time token, which is now spent. This machine and browser stay paired: no token is needed next time.',
+  pairing: 'It attached with this browser\'s stored pairing, so no token was needed. Any token you were given is unused and harmless.',
+};
+
 async function welcomeText(already) {
-  const lines = [already ? 'The Stitch Slop tab is already connected.' : 'Connected — the user\'s Stitch Slop tab just attached.'];
+  const how = AUTH_LINE[mode === 'follower' ? follow?.attachedBy : attachedBy];
+  const lines = [(already ? 'The Stitch Slop tab is already connected.' : 'Connected — the user\'s Stitch Slop tab just attached.')
+    + (how ? ` ${how}` : '')];
   try {
     const env = await callApp('scene.describe', { limit: 8 });
     if (env?.ok) {
