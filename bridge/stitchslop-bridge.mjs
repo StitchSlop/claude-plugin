@@ -258,8 +258,13 @@ async function runClient([verb, ...rest]) {
       log(`--out was given but "${rest[0] ?? verb}" returned no image, so nothing was written.`);
     }
   }
-  process.stdout.write(JSON.stringify(out.body, null, 2) + '\n');
-  process.exit(out.body?.ok === false ? 1 : 0);
+  // EXIT ONLY ONCE THE WRITE HAS DRAINED. Into a pipe, Node writes
+  // asynchronously and a pipe holds 64KB, so exiting on the next line cut every
+  // result over 65,536 bytes: renders, the tool list, a big describe. A file is
+  // written synchronously, which is why `> x.json` was whole and `| jq` was not
+  // (mcpTester, 2026-09-19).
+  process.stdout.write(JSON.stringify(out.body, null, 2) + '\n', () =>
+    process.exit(out.body?.ok === false ? 1 : 0));
 }
 
 if (words.length) await runClient(words);
