@@ -18,33 +18,30 @@ attaches, and comes back with a summary of the design. Greet the user with what
 you can see and ask what they want. Do not change anything until they ask.
 
 - The tab attaches **on its own** while the user's **Enable Agent Connections**
-  switch is on (the **⌁ Agent** panel in the app). There is no Connect button.
-  Never send the user looking for something to press, and never ask them to
-  restart anything.
-- **If the user pastes a line carrying `Origin: …  Token: tok_…`**, take those
-  two values out of it and call **`pair`**. The panel offers two wordings:
-  - a short one, *"Connect to my Stitch Slop tab with the Stitch Slop plugin.
-    Origin: …  Token: …"*;
-  - a long one, *"Please write and run a small local bridge … Origin: …
-    Token: …"*, written for agents without this plugin.
-
-  For the long one, **do not write a bridge** and do not fetch the `/agent`
-  page it links to. This plugin is the bridge; say so in a sentence. The token
-  is one-time: after the first attach this machine stays paired and no token is
-  needed again.
-- **A line with `Origin:` and no `Token:`** means the browser is already paired;
-  the app shows it to a returning user. Call `wait_for_connection` with that
-  `origin`. No token is needed, so don't ask for one.
-- Before telling the user nothing is saved, check `connection_status`:
-  `pairedOrigins` lists every site this machine can reconnect to without a
-  token. `paired` covers only the site the bridge is serving at that moment.
-- If `wait_for_connection` says this machine is not paired yet, ask the user to
-  open the ⌁ Agent panel, switch on Enable Agent Connections, and paste you the
-  line it shows. Then `pair`.
-- If a wait times out, its result lists what to ask the user, in order. Relay
-  that; don't improvise descriptions of the app's UI. `connection_status`
-  reports the bridge's state without changing anything. More in
-  [troubleshooting.md](troubleshooting.md).
+  switch is on (the **⌁ Agent** panel in the app). There is no Connect button,
+  so never send the user looking for one, and never ask them to restart
+  anything.
+- **When the user pastes the panel's line**, *"If you have the Stitch Slop
+  plugin, give its pair tool this token and origin and write nothing.
+  Otherwise: … Origin: …  Token: tok_…"*, take the origin and token out of it
+  and call **`pair`**. **Do not write a bridge** and do not fetch the `/agent`
+  page it links to. This plugin is the bridge. The line always carries a token,
+  even for a browser that is already paired; `pair` then attaches with the
+  stored pairing and the token goes unused, which is harmless.
+- **When you need the line**, ask for it in these words: *"Open the ⌁ Agent
+  panel, switch on Enable Agent Connections, click Copy, and paste the line to
+  me."* There is no separate token button.
+- A machine that has connected before needs no line: `wait_for_connection`
+  alone reconnects it. Before telling the user nothing is saved, check
+  `connection_status`. `pairedOrigins` lists every site this machine can
+  reconnect to without a token; `paired` covers only the site the bridge is
+  serving at that moment.
+- **If a wait times out, read what it says the bridge saw before asking the
+  user anything.** The panel shows a refused tab only as "Waiting to connect",
+  so the reason for a refusal is in the wait's result and in
+  `connection_status` (`recentRefusals`, `connectionAttempts`), never on the
+  user's screen. Relay the result's advice; don't improvise descriptions of
+  the app's UI. More in [troubleshooting.md](troubleshooting.md).
 - Chrome shows the user a prompt once: *"…wants to access other apps and
   services on this device"*. It sounds broader than it is — it is this one
   loopback connection. Tell them to expect it **before** it appears if this is

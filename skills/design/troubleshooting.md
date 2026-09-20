@@ -1,25 +1,46 @@
 # When the tab does not attach
 
-Start with `connection_status`. Then match what the **user's ⌁ Agent panel
-says** — it reports its own state in words, and those words are the best
-evidence there is. Ask the user to read it to you.
+**Start with what the bridge saw, not with the user.** The app's panel shows
+every refusal as "Waiting to connect": the user never sees why a tab was turned
+away. The bridge does. A wait that times out leads with it, and
+`connection_status` has the detail:
+
+- `recentRefusals`: each refusal's `reason`, the tab's `origin`, and how many
+  times it happened.
+- `connectionAttempts` and `lastAttemptAt`: whether the tab tried at all.
+
+**The discriminator:** if the bridge saw no attempt, the tab is not trying
+(switch off, browser block, CSP, or the tab is attached somewhere else). If it
+saw attempts and refused them, the site or the credential is wrong. Those need
+opposite fixes, and they look identical from the user's chair.
+
+## What the bridge saw
+
+| `reason` | What it is | What to do |
+|---|---|---|
+| `site` | The tab is on a site this bridge does not admit: not its own, not paired with this machine, and no token given for it | Ask for the line — *"Open the ⌁ Agent panel, switch on Enable Agent Connections, click Copy, and paste the line to me"* — and `pair` with its token and origin. |
+| `spent_token` | The tab offered a token that was already used, and no pairing this machine recognises | Tokens are one-time, and a page mints one per load. Ask the user to reload the Stitch Slop page, click Copy, and paste the line; then `pair`. |
+| `wrong_pairing` / `unknown_token` | The tab's saved pairing doesn't match `~/.stitchslop/pairing.json`, and its token isn't one this bridge was given | Ask for the line again, and `pair`. |
+| `busy` | This bridge is serving another tab; the credential was fine | One tab per bridge. Close the other tab, or, if the user wants two documents driven at once, `wait_for_connection` with `ownBridge: true`. The waiting tab finds the new bridge by itself. |
+| *no attempts* | The tab is not dialling this bridge | See the panel's words below. |
+
+## What the panel says
+
+Ask for the status word under **Enable Agent Connections**. There are seven:
 
 | The panel says | What it is | What to do |
 |---|---|---|
-| *Waiting for your agent to start the connector…* | Nothing answered on 8787–8790 yet | Normal for the first seconds after `wait_for_connection`. Chrome throttles repeated failed dials, so the tab may take 10–20 s to notice a bridge that has just opened. Wait again. |
-| *Still waiting. If your agent says it is running, check this: … --origin …* | Either nothing is listening, or a bridge is listening for a **different site** — the browser cannot tell a 403 from a dead port | Compare the origin in that message with `origin` from `connection_status`. If they differ, ask for the paste line and `pair` with its Origin. |
-| The agent says nothing is saved, but this computer has connected before | It checked `paired`, which covers only the site the bridge is serving right now | `connection_status` → `pairedOrigins`. A site listed there reconnects with no token: `wait_for_connection` with that `origin`. |
-| A credential refusal (*token has already been used*, *does not match this machine's pairing*) | The tab's token is not one this bridge was given, and its stored pairing is not in `~/.stitchslop/pairing.json` | Ask the user to copy the current line from the panel and paste it to you; pass its token to `pair`. If it keeps refusing, the panel's **Forget pairing** button clears the browser's half; then a fresh line and `pair`. |
-| *…already serving another Stitch Slop tab* (busy) | A bridge is serving a different tab. The credential was fine | One tab per bridge. Close the other tab, or — if the user wants two documents driven at once — `wait_for_connection` with `ownBridge: true`; the waiting tab finds the new bridge on its own. |
-| *Another tab took this connection* (displaced) | Terminal for that tab: it stops polling on purpose, so two tabs cannot fight | The user switches Enable Agent Connections off and on in the tab they want. |
-| *Your browser is blocking this page…* (denied) | **Chrome only.** The local-network permission was refused, and Chrome remembers | The user allows it in the site's settings (the icon left of the address bar → site settings), then switches the toggle back on. Nothing on your side fixes this. |
-| *That connector speaks protocol N* | The app has moved to a newer wire protocol than this plugin | The plugin needs updating: `/plugin update stitchslop`. |
-| Nothing at all, and the state line never changes | The switch is off, or the dial is blocked before any socket opens (a Content-Security-Policy violation) | Ask whether the switch is on. If it is, ask the user to open the browser console — it names a blocked connection in one line. That is a site-side bug; nothing on their machine fixes it. |
+| **Not connected** | The switch is off. Nothing dials while it is off | Ask them to switch it on. The saved pairing survives off and on. |
+| **Waiting to connect** | The tab is dialling and has not attached. **This includes every refusal** | Read what the bridge saw, above. No attempts at all while this shows means the dial never leaves the browser: ask the user to open the browser console, which names a blocked connection (a Content-Security-Policy violation) in one line. That is a site-side bug; nothing on their machine fixes it. Right after a bridge opens, Chrome may take 10–20 s to notice it, because it throttles failed dials. |
+| **Connected** | The tab is attached, but not to this session's bridge | `connection_status` → `otherBridges`. Another agent session, or a bridge started by hand, has it. |
+| **Disconnected** | It was attached and lost the bridge | Normal when a session ends. `wait_for_connection` reopens one, and the tab reattaches by itself. |
+| **Blocked by your browser** | **Chrome only.** The local-network permission was refused, and Chrome remembers it | Allow local network access for the site in the browser's settings (the icon left of the address bar → site settings). Nothing on your side fixes this. Firefox never shows it. |
+| **Connected in another tab** | Another Stitch Slop tab holds the connection | Close that tab, or use it. |
+| **Agent needs an update** | The app speaks a newer wire protocol than this plugin | `/plugin update stitchslop`, then a new session. |
 
-**The discriminator:** if the bridge never saw a connection, the browser never
-tried (switch off, permission, CSP). If it saw one and turned it away, the
-origin or the credential is wrong. Those need opposite fixes and look identical
-from the user's chair.
+**Nothing saved?** Before saying so, check `pairedOrigins` in
+`connection_status`. It lists every site this machine can reconnect to without
+a token. `paired` covers only the site the bridge is serving at that moment.
 
 ## Other situations
 
@@ -31,7 +52,7 @@ from the user's chair.
   reattaches by itself within a few seconds.
 - **Two agent sessions, one tab.** Both can drive it. Edits interleave in one
   undo history, so say so if the user seems to be doing this by accident.
-- **The tab keeps dropping.** Look for a second Stitch Slop tab first. Then
+- **The tab keeps dropping** ("Disconnected" coming and going). Look for a second Stitch Slop tab first. Then
   laptop sleep: the bridge drops a tab that stops answering pings for ~75 s, and
   the tab reconnects on its own when it wakes.
 - **Every port is busy.** Four bridges is the limit (8787–8790).

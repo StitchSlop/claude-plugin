@@ -36,10 +36,15 @@ through the bridge's shell face (`skills/design/shell-fallback.md`).
 ## What the user does
 
 1. In the app: **⌁ Agent** → switch on **Enable Agent Connections**.
-2. First time on a machine only: paste the line the panel shows to their agent.
-   The agent passes its token to `pair`. After that the machine is paired and
-   step 1 is the whole of it.
+2. First time on a machine only: click **Copy** and paste the line to their
+   agent, which passes its token to `pair`. After that the machine is paired,
+   and step 1 plus "connect to Stitch Slop" is the whole of it.
 3. Ask for things.
+
+The panel shows one status word, and every refusal appears there as "Waiting
+to connect". The bridge keeps the reasons: `connection_status` reports
+`recentRefusals` and `connectionAttempts`, and a wait that times out leads with
+them.
 
 ## What is reused and what is replaced
 

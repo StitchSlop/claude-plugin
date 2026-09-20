@@ -10,6 +10,7 @@
  * Tests behaviour, never the log.
  */
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -297,6 +298,18 @@ crossSite.send?.({ token: 'tok_aaaaaaaaaaaa' });
 ok('a token armed for one site does not open the bridge to another', !crossSite.rejected
   && (await crossSite.next?.())?.error === 'bad_credential');
 
+// The panel shows every one of those as "Waiting to connect", so the bridge
+// is the only place anyone can read why. Each must be on record, by reason.
+const dr = JSON.parse(textOf(await d.call('connection_status')));
+const reasons = new Map((dr.recentRefusals ?? []).map((r) => [r.reason, r]));
+ok('refusals are on record where an agent can read them: the unpaired site…',
+  reasons.get('site')?.origin === 'http://localhost:7777', JSON.stringify(dr.recentRefusals ?? []).slice(0, 90));
+// 8888 holds a pairing, so a bad credential from it is a wrong pairing too.
+const refusedAt = (reason, origin) => (dr.recentRefusals ?? []).some((r) => r.reason === reason && r.origin === origin);
+ok('  …the wrong secret, and the token from another site',
+  refusedAt('wrong_pairing', ORIGIN) && refusedAt('wrong_pairing', 'http://localhost:8888'), JSON.stringify(dr.recentRefusals).slice(0, 200));
+ok('  …with every attempt counted, refused or not', dr.connectionAttempts >= 4, String(dr.connectionAttempts));
+
 const e = mcp(['--lazy'], {}, { origin: null });
 await e.init();
 const eText = textOf(await e.call('wait_for_connection', { origin: ORIGIN + '/', timeoutSeconds: 10 }));
@@ -306,14 +319,49 @@ const f = mcp(['--lazy'], {}, { origin: null });
 await f.init();
 const fText = textOf(await f.call('wait_for_connection', { origin: 'http://localhost:5555', timeoutSeconds: 5 }, 20_000));
 ok('  ...and naming a DIFFERENT site does not borrow that tab', /Still waiting|not paired/.test(fText) && !/1,234/.test(fText), fText.slice(0, 50));
+ok('a wait nobody dialled says the tab never tried, not that a credential failed',
+  /saw no connection attempt at all/.test(fText) && !/being refused/.test(fText), fText.slice(0, 120));
+const eStatus = JSON.parse(textOf(await e.call('connection_status')));
+ok('a following session sees its host\'s refusals', (eStatus.recentRefusals ?? []).some((r) => r.reason === 'site'),
+  JSON.stringify(eStatus.recentRefusals ?? []).slice(0, 60));
+// A tab refused DURING a wait: the result must lead with that, since the
+// user's panel only says "Waiting to connect".
+const fWait2 = f.call('wait_for_connection', { timeoutSeconds: 6 }, 20_000);
+await wait(800);
+const knocker = await tab(8798, 'http://localhost:7777');
+const fText2 = textOf(await fWait2);
+ok('a wait during which the tab was refused leads with the refusal and its fix',
+  knocker.rejected === 403 && /IS reaching this bridge and being refused/.test(fText2) && /localhost:7777/.test(fText2)
+  && /click Copy/.test(fText2), fText2.slice(0, 140));
 const fEvil = await f.call('wait_for_connection', { origin: 'https://evil.example' });
 ok('  ...and an origin that is neither production nor loopback is refused', fEvil?.result?.isError === true);
 
-ok('stdout stayed pure JSON-RPC in every bridge',
-  [a, b, c, d, e, f].reduce((n, m) => n + m.junk.length, 0) === 0);
+/* ======== the app's one line, given to an ALREADY-PAIRED browser ======== */
+// The app now shows the same line, token included, to every browser. For a
+// paired one the tab sends its secret AND that token: the pairing must win and
+// the token go unused — pairing again would churn a working credential.
+console.log('\nthe line\'s token, for a browser that is already paired');
+t5.close?.();
+for (let i = 0; i < 40 && JSON.parse(textOf(await d.call('connection_status'))).connected; i++) await wait(100);
+const g = mcp(['--lazy'], {}, { origin: null });
+await g.init();
+const gPair = g.call('pair', { token: 'tok_bbbbbbbbbbbb', origin: ORIGIN, timeoutSeconds: 15 }, 30_000);
+await wait(1200);
+const t6 = await tab(8797);
+t6.send?.({ secret: hello.pairingSecret, token: 'tok_bbbbbbbbbbbb' });
+const hello6 = await t6.next?.();
+t6.serve?.(TOOLS, answer);
+const gText = textOf(await gPair);
+ok('pair with the line\'s token attaches a paired browser by its pairing', hello6?.hello === 'stitchslop-connector'
+  && hello6.pairingSecret === undefined && /stored pairing, so no token was needed/.test(gText), gText.slice(0, 80));
+const used = JSON.parse(fs.readFileSync(pf, 'utf8'))[ORIGIN]?.usedTokens ?? [];
+ok('  ...and the token is left unspent', !used.includes(crypto.createHash('sha256').update('tok_bbbbbbbbbbbb').digest('hex').slice(0, 32)));
 
-for (const m of [a, b, c, d, e, f]) { try { m.proc.kill(); } catch {} }
-for (const t of [t1, t2, t3, t4, t5, stranger, forger, crossSite]) { try { t.close?.(); } catch {} }
+ok('stdout stayed pure JSON-RPC in every bridge',
+  [a, b, c, d, e, f, g].reduce((n, m) => n + m.junk.length, 0) === 0);
+
+for (const m of [a, b, c, d, e, f, g]) { try { m.proc.kill(); } catch {} }
+for (const t of [t1, t2, t3, t4, t5, t6, stranger, forger, crossSite, knocker]) { try { t.close?.(); } catch {} }
 await wait(200);
 fs.rmSync(CFG, { recursive: true, force: true });
 console.log(`\n${bad ? `FAILED — ${bad} of ${checks}` : `all ${checks} checks passed`}`);
