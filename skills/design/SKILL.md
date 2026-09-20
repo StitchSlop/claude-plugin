@@ -21,12 +21,16 @@ you can see and ask what they want. Do not change anything until they ask.
   switch is on (the **⌁ Agent** panel in the app). There is no Connect button.
   Never send the user looking for something to press, and never ask them to
   restart anything.
-- **If the user pastes a line** like *"Please write and run a small local
-  bridge … Origin: https://www.stitchslop.com  Token: tok_1a2b3c4d5e6f. …"* —
-  **do not write a bridge.** That line is written for agents without this
-  plugin. Take the `Token` and `Origin` out of it and call **`pair`**. Do not
-  fetch the `/agent` page it links to; you do not need it. The token is
-  one-time; after the first attach this machine stays paired and no token is
+- **If the user pastes a line carrying `Origin: …  Token: tok_…`**, take those
+  two values out of it and call **`pair`**. The panel offers two wordings:
+  - a short one, *"Connect to my Stitch Slop tab with the Stitch Slop plugin.
+    Origin: …  Token: …"*;
+  - a long one, *"Please write and run a small local bridge … Origin: …
+    Token: …"*, written for agents without this plugin.
+
+  For the long one, **do not write a bridge** and do not fetch the `/agent`
+  page it links to. This plugin is the bridge; say so in a sentence. The token
+  is one-time: after the first attach this machine stays paired and no token is
   needed again.
 - If `wait_for_connection` says this machine is not paired yet, ask the user to
   open the ⌁ Agent panel, switch on Enable Agent Connections, and paste you the

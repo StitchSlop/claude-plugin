@@ -741,9 +741,10 @@ const PAIR_TOOL = {
   name: 'pair',
   title: 'Pair with the token from the user\'s paste line',
   description:
-    'First-time setup on this machine, or after a bad_credential. When the user pastes the line from the '
-    + 'app\'s Agent panel ("Please write and run a small local bridge … Origin: <origin>  Token: tok_…"), do '
-    + 'NOT write a bridge — this plugin is the bridge. Pass that line\'s `token` and `origin` here. The '
+    'First-time setup on this machine, or after a bad_credential. When the user pastes a line from the '
+    + 'app\'s Agent panel carrying "Origin: <origin>  Token: tok_…" — the short one that names this plugin, or '
+    + 'the long one that asks for a bridge to be written — do NOT write a bridge: this plugin is the bridge. '
+    + 'Pass that line\'s `token` and `origin` here. The '
     + 'token is one-time: it is spent when the tab attaches, after which this machine stays paired and no '
     + 'token is needed again. Then parks like wait_for_connection (`timeoutSeconds`, up to 120, default 60) '
     + 'and returns the design summary. Only the production site and loopback origins are accepted.',
@@ -906,7 +907,8 @@ async function toolWait(args) {
 async function toolPair(args) {
   const token = typeof args.token === 'string' ? args.token.trim().replace(/[.,;]+$/, '') : '';
   if (!token || token.length > 200) return text('`token` must be the token from the paste line, e.g. tok_1a2b3c4d5e6f.', true);
-  const origin = normOrigin(args.origin ?? ORIGIN);
+  // Pasted text: tolerate a sentence's punctuation after the origin.
+  const origin = normOrigin(String(args.origin ?? ORIGIN).trim().replace(/[.,;]+$/, ''));
   if (!originAllowed(origin)) {
     return text(`Refused: ${origin} is not the production site or a loopback address. If the user really runs Stitch Slop `
       + 'there, they can allow it themselves by setting STITCHSLOP_ORIGIN for this MCP server. Do not work around this.', true);

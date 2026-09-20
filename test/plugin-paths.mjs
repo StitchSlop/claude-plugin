@@ -110,7 +110,8 @@ ok('pair refuses an origin that is neither production nor loopback', evil?.resul
 // bridge is still idle, and only one of them may bind.
 const [parallelWait, pairing] = a.callTogether([
   ['wait_for_connection', { timeoutSeconds: 20 }],
-  ['pair', { token: 'tok_feedfacecafe.', origin: ORIGIN + '/', timeoutSeconds: 20 }],
+  // Both values as a sentence might leave them: trailing punctuation, a slash.
+  ['pair', { token: 'tok_feedfacecafe.', origin: ORIGIN + '/.', timeoutSeconds: 20 }],
 ]);
 await wait(600);
 ok('pair opens the bridge', await portOpen(8797));
