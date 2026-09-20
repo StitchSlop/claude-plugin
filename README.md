@@ -21,9 +21,12 @@ test/                             plugin-path tests and a stand-in tab
 ## Install
 
 ```
-/plugin marketplace add <owner>/<this-repo>
+/plugin marketplace add WilliamOsman/StitchSlop_plugin
 /plugin install stitchslop@stitchslop
 ```
+
+The repo is private for now, so this works only for accounts with access to it
+(git must be able to clone it — `gh auth login` covers that).
 
 or, from a checkout, `claude --plugin-dir /path/to/StitchSlop_plugin`. Needs
 `node` on the PATH. MCP servers start with a session, so the native tools arrive
