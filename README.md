@@ -21,7 +21,7 @@ test/                             plugin-path tests and a stand-in tab
 ## Install
 
 ```
-/plugin marketplace add WilliamOsman/StitchSlop_plugin
+/plugin marketplace add StitchSlop/StitchSlop_plugin
 /plugin install stitchslop@stitchslop
 ```
 
