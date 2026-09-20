@@ -97,7 +97,7 @@ await a.init();
 await wait(400);
 ok('a lazy bridge with no credential stays alive', a.proc.exitCode === null);
 ok('  ...and listens on nothing until asked', !(await portOpen(8797)) && !(await portOpen(8798)));
-ok('  ...offering only its own tools', (await a.tools()).join() === 'wait_for_connection,pair,connection_status');
+ok('  ...offering only its own tools', (await a.tools()).join() === 'wait_for_connection,pair,connection_status,call_with_file');
 const st0 = JSON.parse(textOf(await a.call('connection_status')));
 ok('connection_status opens nothing', st0.mode === 'idle' && !(await portOpen(8797)), st0.mode);
 
@@ -137,6 +137,25 @@ ok('  ...and the transport id never reaches the model', !/"id"/.test(textOf(rend
 const refused = await a.call('object.draw');
 ok('a refusal is isError carrying the app\'s sentence', refused?.result?.isError === true && /closed shape/.test(textOf(refused)));
 
+/* ============================ call_with_file ============================== */
+console.log('\ncall_with_file');
+const pngFile = path.join(CFG, 'logo.png');
+fs.writeFileSync(pngFile, Buffer.from(PNG, 'base64'));
+const attached = await a.call('call_with_file', { command: 'background.set', args: { opacity: 0.5 }, fileArg: 'image', path: pngFile });
+const attachedText = textOf(attached);
+ok('an image reaches the tab as a data URL under the named argument',
+  attached?.result?.isError === false && /"received": "data:image\/png;base64,"/.test(attachedText), attachedText.slice(0, 90));
+ok('  ...alongside the other arguments', /"opacity": 0\.5/.test(attachedText));
+ok('  ...and the result says what was attached', /attached .*logo\.png, image\/png/.test(attachedText));
+const notImage = path.join(CFG, 'notes.png');
+fs.writeFileSync(notImage, 'secret notes, named like a picture');
+const refusedFile = await a.call('call_with_file', { command: 'background.set', fileArg: 'image', path: notImage });
+ok('a file that is not an image is refused by its bytes, whatever its name',
+  refusedFile?.result?.isError === true && /not a PNG, JPEG, WebP or GIF/.test(textOf(refusedFile)));
+ok('  ...and nothing is sent to the tab', !/secret notes/.test(textOf(refusedFile)) && !/received/.test(textOf(refusedFile)));
+ok('call_with_file will not dress up the bridge\'s own tools',
+  (await a.call('call_with_file', { command: 'pair', fileArg: 'token', path: pngFile }))?.result?.isError === true);
+
 /* =============================== two tabs ================================= */
 console.log('\ntwo tabs');
 const t2 = await tab(8797);
@@ -154,6 +173,13 @@ ok('it reaches the same tab', /already connected/.test(textOf(bWait)) && /1,234/
 ok('  ...without opening a second port', !(await portOpen(8798)));
 ok('  ...and lists the tab\'s tools', (await b.tools()).includes('scene.describe'));
 ok('  ...and its calls go through', /Rendered/.test(textOf(await b.call('scene.render'))));
+// 2MB — over the control plane's old 1MB body limit, which a follower's
+// /call has to pass through. PNG signature, then padding.
+const bigFile = path.join(CFG, 'big.png');
+fs.writeFileSync(bigFile, Buffer.concat([Buffer.from(PNG, 'base64'), Buffer.alloc(2_000_000, 7)]));
+const big = await b.call('call_with_file', { command: 'background.set', fileArg: 'image', path: bigFile }, 30_000);
+ok('  ...and a 2MB image goes through the shared bridge whole',
+  big?.result?.isError === false && Number(/"receivedLength": (\d+)/.exec(textOf(big))?.[1]) > 2_600_000, textOf(big).slice(0, 80));
 const bStatus = JSON.parse(textOf(await b.call('connection_status')));
 ok('  ...and says it is sharing', bStatus.mode === 'follower' && bStatus.port === 8797, JSON.stringify(bStatus).slice(0, 70));
 
@@ -168,6 +194,10 @@ const c2 = await cli('call', 'scene.render', '--out', shot);
 const env2 = JSON.parse(c2.stdout || '{}');
 ok('--out writes the picture and replaces dataUrl', c2.status === 0 && fs.existsSync(shot) && !env2.dataUrl && env2.savedTo === shot && env2.savedType === 'image/png');
 ok('bad JSON args exit 64', (await cli('call', 'scene.describe', '{nope')).status === 64);
+const c3 = await cli('call', 'background.set', '{"opacity":0.3}', '--file', `image=${pngFile}`);
+const env3 = JSON.parse(c3.stdout || '{}');
+ok('--file KEY=PATH attaches an image to the call', c3.status === 0 && env3.received?.startsWith('data:image/png;base64,') && env3.opacity === 0.3);
+ok('  ...and refuses a non-image with a usage error, sending nothing', (await cli('call', 'background.set', '--file', `image=${notImage}`)).status === 64);
 // A pipe holds 64KB and Node writes into one asynchronously, so exiting right
 // after the write cut the reply at 65,536 bytes; `cli` reads through a pipe.
 const bigReply = await cli('call', 'scene.describe', '{"big":true}');

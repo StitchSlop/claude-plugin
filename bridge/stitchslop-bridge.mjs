@@ -50,7 +50,7 @@ const SELF = path.basename(process.argv[1] ?? 'stitchslop-bridge.mjs');
 /* ------------------------------------------------------------ arguments --- */
 // Flags that take a value are listed, not guessed: guessing from "the next word
 // does not start with --" lets `--version call …` swallow the subcommand.
-const VALUE_FLAGS = new Set(['--origin', '--port', '--config-dir', '--token', '--idle-minutes', '--out']);
+const VALUE_FLAGS = new Set(['--origin', '--port', '--config-dir', '--token', '--idle-minutes', '--out', '--file']);
 const flags = {};
 const words = [];
 for (let i = 2; i < process.argv.length; i++) {
@@ -181,6 +181,39 @@ const parseDataUrl = (s) => {
   return m ? { mimeType: m[1], data: m[2] } : null;
 };
 
+/**
+ * A local image as a data URL, for an app command that takes one
+ * (background.set's `image`, today). The agent cannot reasonably type a
+ * picture into a tool call — it is hundreds of thousands of tokens, and over
+ * ARG_MAX on the shell path — so the bridge reads it instead.
+ *
+ * IMAGES ONLY, decided by the file's bytes rather than its name: this sends a
+ * file's contents to the tab, and restricting it to the four types the app
+ * accepts is what keeps it from being a way to ship an arbitrary local file
+ * anywhere. Returns { dataUrl, mimeType, bytes } or { error }.
+ */
+const FILE_MAX_BYTES = 14 * 1024 * 1024;   // ~19MB once base64'd; the app refuses past 20MB encoded
+function imageDataUrl(file) {
+  if (typeof file !== 'string' || !file) return { error: '`path` must be a file path.' };
+  const abs = path.resolve(file.replace(/^~(?=$|\/)/, os.homedir()));
+  let st;
+  try { st = fs.statSync(abs); } catch { return { error: `There is no file at ${abs}.` }; }
+  if (!st.isFile()) return { error: `${abs} is not a file.` };
+  if (st.size > FILE_MAX_BYTES) return { error: `${abs} is ${(st.size / 1e6).toFixed(1)}MB; the limit is ${FILE_MAX_BYTES / 1e6 | 0}MB. Resize it first.` };
+  const bytes = fs.readFileSync(abs);
+  const b = bytes;
+  const mimeType = b[0] === 0x89 && b.subarray(1, 4).toString() === 'PNG' ? 'image/png'
+    : b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff ? 'image/jpeg'
+    : b.subarray(0, 4).toString() === 'RIFF' && b.subarray(8, 12).toString() === 'WEBP' ? 'image/webp'
+    : b.subarray(0, 4).toString() === 'GIF8' ? 'image/gif'
+    : null;
+  if (!mimeType) {
+    return { error: `${abs} is not a PNG, JPEG, WebP or GIF image — the only kinds the app accepts here. `
+      + 'An SVG or PDF has to be exported as a PNG first.' };
+  }
+  return { dataUrl: `data:${mimeType};base64,${bytes.toString('base64')}`, mimeType, bytes: bytes.length, path: abs };
+}
+
 /* ====================== client mode: status | tools | wait | call ========= */
 /**
  * Drives a bridge that is ALREADY RUNNING, from an ordinary shell (§4.4). The
@@ -220,11 +253,20 @@ async function runClient([verb, ...rest]) {
       if (!Number.isFinite(seconds)) { log('usage: wait [SECONDS]'); process.exit(64); }
       out = await control(session, 'POST', '/wait', { seconds }, (seconds + 10) * 1000);
     } else if (verb === 'call') {
-      if (!rest[0]) { log('usage: call <COMMAND> [JSON-ARGS] [--out FILE]'); process.exit(64); }
+      if (!rest[0]) { log('usage: call <COMMAND> [JSON-ARGS] [--file KEY=PATH] [--out FILE]'); process.exit(64); }
       let args = {};
       if (rest[1]) {
         try { args = JSON.parse(rest[1]); }
         catch (e) { log(`the args must be JSON: ${e.message}`); process.exit(64); }
+      }
+      // --file image=logo.png puts that image into args.image as a data URL.
+      if (flags['--file']) {
+        const m = /^([A-Za-z_][\w]*)=(.+)$/.exec(String(flags['--file']));
+        if (!m) { log('--file takes KEY=PATH, e.g. --file image=logo.png'); process.exit(64); }
+        const img = imageDataUrl(m[2]);
+        if (img.error) { log(img.error); process.exit(64); }
+        args[m[1]] = img.dataUrl;
+        log(`attached ${img.path} (${img.mimeType}, ${img.bytes} bytes) as \`${m[1]}\``);
       }
       out = await control(session, 'POST', '/call', { command: rest[0], args }, CALL_TIMEOUT_MS + 10_000);
     } else {
@@ -372,7 +414,8 @@ const sendJson = (res, status, obj) => {
 const readBody = (req) => new Promise((resolve) => {
   let text = '';
   req.setEncoding('utf8');
-  req.on('data', (c) => { text += c; if (text.length > 1e6) req.destroy(); });
+  // Room for a background image passed through /call (the app's own limit is 20MB encoded).
+  req.on('data', (c) => { text += c; if (text.length > 24e6) req.destroy(); });
   req.on('end', () => { try { resolve(JSON.parse(text || '{}')); } catch { resolve(null); } });
   req.on('error', () => resolve(null));
 });
@@ -778,7 +821,30 @@ const STATUS_TOOL = {
   annotations: { readOnlyHint: true },
 };
 
-const OWN_TOOLS = [WAIT_TOOL, PAIR_TOOL, STATUS_TOOL];
+const FILE_TOOL = {
+  name: 'call_with_file',
+  title: 'Run an app command with a local image attached',
+  description:
+    'For an app command that takes an image as a data URL — today background.set\'s `image`, which is '
+    + 'also what background.digitize and emboss.fromImage work from. Do not base64 an image yourself: '
+    + 'give its `path` here and the bridge reads it, puts it into `args[fileArg]` as a data URL, and runs '
+    + '`command`. Returns that command\'s own result, exactly as calling it directly would. PNG, JPEG, '
+    + 'WebP and GIF only, recognised by content, up to 14MB; an SVG or PDF must be exported to PNG first. '
+    + 'The file\'s contents are sent to the user\'s tab, so use only a file the user pointed you at.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      command: { type: 'string', description: 'The app command, e.g. "background.set".' },
+      args: { type: 'object', description: 'Its other arguments, as you would pass them directly.' },
+      fileArg: { type: 'string', description: 'Which argument receives the data URL, e.g. "image".' },
+      path: { type: 'string', description: 'The image file. Absolute, or relative to the current directory.' },
+    },
+    required: ['command', 'fileArg', 'path'],
+    additionalProperties: false,
+  },
+};
+
+const OWN_TOOLS = [WAIT_TOOL, PAIR_TOOL, STATUS_TOOL, FILE_TOOL];
 
 /** Origins `pair` may switch to. A pasted line is untrusted text: letting it
  *  name any site would let that site attach and hand the model its own "tool
@@ -880,6 +946,7 @@ async function handleRpc(msg) {
       if (name === WAIT_TOOL.name) result(await toolWait(args));
       else if (name === PAIR_TOOL.name) result(await toolPair(args));
       else if (name === STATUS_TOOL.name) result(await toolStatus());
+      else if (name === FILE_TOOL.name) result(await toolCallWithFile(args));
       else if (!isConnected()) {
         // isError, not a JSON-RPC error: the call was well-formed, the app simply is not there.
         result(text('No Stitch Slop tab is connected. Call `wait_for_connection` — the tab attaches on its own.', true));
@@ -940,6 +1007,20 @@ async function toolPair(args) {
   const already = isConnected();
   if (!already && !(await waitForApp(secs))) return text(`The token is armed on port ${PORT ?? follow?.session.port}.\n\n${STILL_WAITING(secs)}`);
   return text(await welcomeText(already));
+}
+
+async function toolCallWithFile({ command, args = {}, fileArg, path: file } = {}) {
+  if (typeof command !== 'string' || !command) return text('`command` must name an app command, e.g. "background.set".', true);
+  if (OWN_TOOLS.some((t) => t.name === command)) return text(`${command} is this bridge's own tool, not an app command.`, true);
+  if (typeof fileArg !== 'string' || !/^[A-Za-z_]\w*$/.test(fileArg)) return text('`fileArg` must be the argument name, e.g. "image".', true);
+  if (args === null || typeof args !== 'object' || Array.isArray(args)) return text('`args` must be an object.', true);
+  if (!isConnected()) return text('No Stitch Slop tab is connected. Call `wait_for_connection` — the tab attaches on its own.', true);
+  const img = imageDataUrl(file);
+  if (img.error) return text(img.error, true);
+  const env = await callApp(command, { ...args, [fileArg]: img.dataUrl });
+  const content = toContent(env);
+  content[0].text = `(attached ${img.path}, ${img.mimeType}, ${img.bytes.toLocaleString('en-US')} bytes, as \`${fileArg}\`)\n\n${content[0].text}`;
+  return { content, isError: env?.ok === false };
 }
 
 async function toolStatus() {

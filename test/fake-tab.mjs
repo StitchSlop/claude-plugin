@@ -76,8 +76,11 @@ export const TOOLS = [
   { name: 'scene.describe', description: 'Describe the scene.', inputSchema: { type: 'object' } },
   { name: 'scene.render', description: 'Render the scene.', inputSchema: { type: 'object' } },
   { name: 'object.draw', description: 'Draw an object.', inputSchema: { type: 'object' } },
+  { name: 'background.set', description: 'Set the background image.', inputSchema: { type: 'object' } },
 ];
-export const answer = (m) => m.command === 'scene.render' ? { ok: true, say: 'Rendered.', dataUrl: `data:image/png;base64,${PNG}`, mmPerPx: 0.2 }
+export const answer = (m) => m.command === 'background.set'
+    ? { ok: true, changed: true, say: 'Background image added.', received: String(m.args?.image ?? '').slice(0, 22), receivedLength: String(m.args?.image ?? '').length, opacity: m.args?.opacity }
+  : m.command === 'scene.render' ? { ok: true, say: 'Rendered.', dataUrl: `data:image/png;base64,${PNG}`, mmPerPx: 0.2 }
   : m.command === 'object.draw' ? { ok: false, error: 'refused', message: 'A fill needs a closed shape.', say: 'A fill needs a closed shape.', changed: false }
   // `big` makes the reply larger than a pipe's 64KB buffer: the CLI once cut
   // anything past 65,536 bytes when its stdout was a pipe.

@@ -47,6 +47,7 @@ node "$BRIDGE" tools                                   # the app's tool list —
 node "$BRIDGE" call scene.describe
 node "$BRIDGE" call params.set '{"target":{"ordinal":2},"values":{"spacing":0.4}}'
 node "$BRIDGE" call scene.render '{"width":700}' --out /tmp/design.png
+node "$BRIDGE" call background.set '{}' --file image=./logo.png
 ```
 
 - Stdout is the app's envelope as JSON and nothing else. Commentary is on stderr.
@@ -55,6 +56,9 @@ node "$BRIDGE" call scene.render '{"width":700}' --out /tmp/design.png
 - `--out FILE` writes a render's image to FILE and replaces `dataUrl` in the
   printed envelope with `savedTo`. Then read the file to see it. Without
   `--out`, a render is ~140 KB of base64 on stdout.
+- `--file KEY=PATH` reads an image (PNG, JPEG, WebP or GIF) and passes it as
+  `KEY`, a data URL. Never paste base64 onto a command line: a picture is
+  larger than the shell allows.
 - With more than one bridge running, every command needs `--port N`; it lists
   them rather than guess, because guessing would drive the wrong document.
 

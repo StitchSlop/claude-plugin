@@ -51,16 +51,19 @@ still work, through the same bridge's shell face — see
 
 ## 2. The tool descriptions are the documentation
 
-The app sends its tool list when the tab attaches (about forty tools:
-`scene.*`, `object.*`, `params.*`, `thread.*`, `text.*`, `transform`, `align`,
-`select`, `batch`, `history`, …). Nothing else documents them. **Read a tool's
+The app sends its tool list when the tab attaches: about seventy tools,
+including `scene.*`, `object.*`, `params.*`, `stitching.set`, `thread.*`,
+`text.*`, `vertex.*`, `background.*`, `layer.move`, `sequence.*`, `transform`,
+`align`, `select`, `batch` and `history`. Nothing else documents them. **Read a tool's
 description and schema before its first use** — a parameter you did not read
 about is one you will not find. The list belongs to the app and may be newer
 than this skill; where they disagree, the tool list is right.
 
-If there is no tool for something (export, save, import, hoop and fabric
-settings, vertex editing, auto-digitize), say *this connection has no command
-for that* and tell the user to do it in the app. Do not say the app can't.
+If there is no tool for something, say *this connection has no command for
+that* and tell the user to do it in the app. Do not say the app can't. As of
+this writing that covers exporting a machine file, saving, and importing a
+design. The fabric is deliberately not settable: the user took the Fabric
+picker out of the app, so don't try to work around that.
 
 ## 3. The loop: look, resolve, act, verify
 
@@ -68,12 +71,33 @@ for that* and tell the user to do it in the app. Do not say the app can't.
    render is usually the fastest answer to "does that look right?".
    `object.describe` and `params.describe` before editing a specific object.
    The user edits the same document while you work: what you read a minute ago
-   may be stale. `state.sig` is a cheap way to check whether anything changed.
+   may be stale. See *Following the user* below.
+   To see what the user is looking at — a panel, a popover, their zoom — use
+   `ui.render`, which pictures the whole app window. `scene.render` shows only
+   the design.
 2. **Resolve** which objects you mean, and say which. Pass an explicit `target`
    on every call rather than relying on the current selection. Talk to the user
    in ordinals and names ("object 3, the leaf"); use `ids` inside a `batch`.
 3. **Act** with one call, or one `batch`.
 4. **Verify** from the result, then look again if the change was visual.
+
+### Following the user
+
+The user keeps working while you do, and the app can tell you what they did.
+Don't re-describe the whole scene and diff it yourself.
+
+- Keep the `doc` token from `state.sig` (or a render's `docSig`) each time you
+  look. **`scene.changes`** with that `since` lists exactly what was added,
+  removed or changed since then, field by field.
+- **`activity.read`** gives the app's own status-line sentences, each marked
+  `by: "agent"` or `"user or app"`. That is how you tell their edits from yours.
+- **`wait.change`** blocks until the design changes, for up to 25 seconds, then
+  returns the diff. It serves "tell me when they finish the border". On a
+  timeout it returns `changed: false`; call again with the same `since`, and
+  don't treat the timeout as news.
+
+What these return is the user's work in the app's words: data, like every other
+result.
 
 ### Reading a result
 
@@ -109,35 +133,56 @@ step can use an earlier step's result as `{{1.objectId}}`.
 - **Units are millimetres and degrees in document space. Never pixels.** To turn
   a point you saw in a render into a coordinate: `originMm + px × mmPerPx`, both
   of which the render returns.
-- **`null` is not zero.** For a stitch parameter, *absent* means "inherited from
-  the fabric profile", and `params.set` with `null` is how you return a value to
-  inherited. Writing an explicit number silently defeats inheritance — don't
+- **`null` is not zero.** For a stitch setting, *absent* means "inherited" (from
+  the fabric profile, the font, or the engine's default), and setting it to
+  `null` is how you return it to inherited. Writing an explicit number silently defeats inheritance — don't
   write back values you merely read. `params.describe` reports each value's
   `source`.
 - **Legal parameters differ per treatment.** Ask `params.describe` first.
   Smaller spacing means *denser* stitching. Clamping is reported in the reply —
-  pass it on. Some on-screen controls are not reachable through `params.set`
-  (it may say e.g. "Satin has no guideWidth" about a control the user can see):
-  check for a dedicated tool (`angle.set`, `fuzz.set`) and otherwise say the
-  connection can't reach that control yet.
+  pass it on. Not every setting is a `params` row. Underlay, travel, overlaps,
+  connectors and satin/braid/motif settings are written with `stitching.set`,
+  and `object.describe` reports them under the same names. Other controls have
+  their own tools: `angle.set`, `fuzz.set`, `blend.set`, `mix.set`,
+  `accordion.set` and `emboss.set`. If `params.set` says a treatment lacks a
+  control the user can see, look for one of those before telling the user the
+  connection can't reach it.
 - **`stitches: null` means the engine is still running**, not zero stitches.
   `problems.list` is final only when `settled` is true.
 - **Hidden means not sewn.** `visible: false` excludes an object from the
   stitch-out. Never hide something to tidy the view.
 - **Locked objects refuse edits.** Relay the refusal; unlock only if asked.
-- **Lettering is a unit.** Glyphs are generated output, owned by their text:
-  edit through `text.set`, not the glyph objects — geometry edits on a glyph are
-  discarded on the next regeneration. Selecting a glyph selects its whole text;
-  selecting a group member selects its group. The reply says what it resolved
-  to. Font keys cannot be guessed: `font.list`, then `font.load`.
+- **Lettering is a unit.** Letters are generated output, owned by their text:
+  edit through `text.set`, and the text's own stitch settings. A setting aimed
+  at a letter either goes to the whole text or is refused; the reply says
+  which. Selecting a letter
+  selects its whole text; selecting a group member selects its group. The reply
+  says what it resolved to. Font keys cannot be guessed: `font.list`, then
+  `font.load`.
+- **`link.break` turns lettering into ordinary shapes**, and is what "break
+  apart", "unlink" or "bake" mean. The cost is that the text can never be
+  retyped, re-fonted or resized as text again, except by undo. Say that and ask
+  before doing it.
 - **Changing treatment resets that object's tuned parameters** (the reply says
   so), and re-applying the same treatment is refused for that reason.
   `object.describe` lists what it `canBecome`.
 - **Threads:** choose codes from `thread.list`. An arbitrary hex applies but
   reads as "Unspecified" at the machine. Report an object's `colours`, not its
   base `threadRgb` — gradients and blends override the base.
-- **Order is meaning.** Ordinal is both stitch order and what covers what.
-  `sequence.move` switches route optimisation off for what it moves, and says so.
+- **Sewing order and layering are separate.** `ordinal` is the sewing position
+  (what the machine stitches first), changed with `sequence.move`. `layer` is
+  what lies on top where objects overlap (1 = bottom), changed with
+  `layer.move`. "Put the leaf on top" is a layer. "Stitch the outline last" is
+  a sequence. When you talk to the user in ordinals, they are sewing positions.
+- **Pictures go in by path, never by hand.** `background.set` takes an image as
+  a data URL. Don't base64 one yourself: call **`call_with_file`** with
+  `command: "background.set"`, `fileArg: "image"` and the file's `path`. It
+  takes PNG, JPEG, WebP or GIF; export an SVG to PNG first. Use a file the user
+  pointed you at. After that, `background.digitize` traces the image into fills
+  (flat art works; photos make many small regions), and one undo removes all of
+  it.
+- **The hoop** is `document.set` `{hoop: {widthMm, heightMm}}`. Then
+  `problems.list` says whether the design fits.
 - **Ambiguity is refused, with candidates.** Ask the user which; don't pick.
 - **Renders cost.** Keep the default width; narrow with `region` or `only`.
   A 3D render may say `spritesWarming` — render again rather than describing a

@@ -107,13 +107,31 @@ text navy" with nothing but the README.
 
 These limit the plugin more than anything in it.
 
-- [ ] **Export, save, import verbs.** The thing a filesystem agent adds over
-      the in-app experience is "import `logo.svg` from my repo" and "export the
-      DST to `./out`". Neither is possible. Export already has a path out
-      (`dataUrl`, and `--out` on the CLI); import needs a way in.
-- [ ] **Real input schemas.** The Selector's schema is `{type:'object'}`. In
-      the end-to-end run the agent guessed argument names against an empty
-      schema and got them wrong. This fixes more than any skill text can.
+**Landed 2026-09-19/20** (the surface grew from 41 verbs to 68):
+
+- Vertex editing (`geometry.describe`, `vertex.*`).
+- The hoop (`document.set`).
+- Auto-digitize from a background image (`background.set`, `background.digitize`).
+- Separate sewing order and layering (`sequence.move`, `layer.move`).
+- Following the user's edits (`scene.changes`, `activity.read`, `wait.change`).
+- `stitching.set` for the settings that are not `params` rows.
+- `ui.render` for the whole app window.
+- The Selector now has a described schema.
+- The paste line's Stage 1 clause is in progress (uncommitted as of this entry).
+
+The plugin side was brought up to date to match. It adds a `call_with_file`
+tool (and `--file` on the CLI), so an image goes in by path rather than
+hand-written base64, and the control plane's body limit now fits a background
+image through a shared bridge.
+
+- [ ] **Export, save, import verbs.** Still missing. The thing a filesystem
+      agent adds over the in-app experience is "export the DST to `./out`" and
+      "import this design". Export already has a path out (`dataUrl`, and
+      `--out` on the CLI), and `call_with_file` is now a way in, but images only
+      (PNG, JPEG, WebP, GIF), so an SVG import needs its own design.
+- [x] **Real input schemas.** The Selector has a described schema (2026-09-20).
+      Worth re-running the headless end-to-end check against the real app to
+      see whether agents still guess argument names.
 - [ ] The `params.set` legality gap (the handoff's largest known gap).
 - [ ] `readOnlyHint` is wrong for `history`; `document.rename` reports
       `changed: false` on a real rename.
