@@ -1,7 +1,7 @@
 /**
  * A stand-in for the Stitch Slop tab, for working on the plugin without the app.
  *
- *   node test/fake-tab.mjs [--origin O] [--token T] [--ports 8787,8788]
+ *   node test/fake-tab.mjs [--origin O] [--token T | --secret S] [--ports 8787,8788]
  *
  * Run directly, it behaves like an armed tab: it walks the ports until a bridge
  * admits it, offers three tools, and answers every command. Imported, it gives
@@ -90,7 +90,8 @@ export const answer = (m) => m.command === 'background.set'
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const arg = (n, d) => { const i = process.argv.indexOf(n); return i > 0 ? process.argv[i + 1] : d; };
   const origin = arg('--origin', 'http://localhost:9999');
-  const credential = { token: arg('--token', 'tok_fake00000000') };
+  // --secret plays a browser that is already paired; --token one that is not.
+  const credential = arg('--secret') ? { secret: arg('--secret') } : { token: arg('--token', 'tok_fake00000000') };
   const ports = arg('--ports', '8787,8788,8789,8790').split(',').map(Number);
   for (;;) {
     for (const port of ports) {

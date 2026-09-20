@@ -32,6 +32,12 @@ you can see and ask what they want. Do not change anything until they ask.
   page it links to. This plugin is the bridge; say so in a sentence. The token
   is one-time: after the first attach this machine stays paired and no token is
   needed again.
+- **A line with `Origin:` and no `Token:`** means the browser is already paired;
+  the app shows it to a returning user. Call `wait_for_connection` with that
+  `origin`. No token is needed, so don't ask for one.
+- Before telling the user nothing is saved, check `connection_status`:
+  `pairedOrigins` lists every site this machine can reconnect to without a
+  token. `paired` covers only the site the bridge is serving at that moment.
 - If `wait_for_connection` says this machine is not paired yet, ask the user to
   open the ⌁ Agent panel, switch on Enable Agent Connections, and paste you the
   line it shows. Then `pair`.

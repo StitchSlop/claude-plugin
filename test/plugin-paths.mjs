@@ -24,7 +24,7 @@ const PORTS = '8797,8798';
 
 let bad = 0, checks = 0;
 const ok = (label, cond, detail = '') => { checks++; if (!cond) bad++; console.log(`  ${cond ? 'ok  ' : 'FAIL'} ${label}${detail ? '  ' + detail : ''}`); };
-const tab = (port) => dial(port, ORIGIN);
+const tab = (port, origin = ORIGIN) => dial(port, origin);
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const portOpen = (port) => new Promise((res) => {
   const s = net.connect({ port, host: '127.0.0.1' });
@@ -33,9 +33,13 @@ const portOpen = (port) => new Promise((res) => {
 });
 
 /* --------------------------------------------------------- an MCP client -- */
-function mcp(extraArgs = [], env = {}) {
-  const proc = spawn('node', [BRIDGE, '--origin', ORIGIN, '--config-dir', CFG, '--port', PORTS, ...extraArgs],
-    { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...env } });
+/** `origin: null` launches with NO --origin, as the plugin's .mcp.json does —
+ *  so the bridge starts on production. */
+function mcp(extraArgs = [], env = {}, { origin = ORIGIN } = {}) {
+  const childEnv = { ...process.env, ...env };
+  delete childEnv.STITCHSLOP_ORIGIN;
+  const proc = spawn('node', [BRIDGE, ...(origin ? ['--origin', origin] : []), '--config-dir', CFG, '--port', PORTS, ...extraArgs],
+    { stdio: ['pipe', 'pipe', 'pipe'], env: childEnv });
   const inbox = [], notes = [], junk = [];
   let out = '', id = 0;
   proc.stderr.on('data', () => {});
@@ -246,10 +250,70 @@ const cText = textOf(await cWait);
 ok('  ...and the parked wait returns', /1,234/.test(cText));
 ok('  ...saying the stored pairing got it in, with no token', /stored pairing, so no token was needed/.test(cText));
 
-ok('stdout stayed pure JSON-RPC in every bridge', a.junk.length + b.junk.length + c.junk.length === 0);
+/* ================ a paired site that is not the bridge's own ============== */
+// Field report, 2026-09-20: the plugin's bridge starts on PRODUCTION. A browser
+// paired from localhost was refused at the upgrade, and only `pair` — with a new
+// token — got past it, every single time.
+console.log('\na paired site that is not the bridge\'s own');
+for (const m of [b, c]) { m.proc.stdin.end(); }
+for (const t of [t3, t4]) { try { t.close?.(); } catch {} }
+for (let i = 0; i < 40 && (await portOpen(8797) || await portOpen(8798)); i++) await wait(100);
 
-for (const m of [a, b, c]) { try { m.proc.kill(); } catch {} }
-for (const t of [t1, t2, t3, t4]) { try { t.close?.(); } catch {} }
+const d = mcp(['--lazy'], {}, { origin: null });
+await d.init();
+const d0 = JSON.parse(textOf(await d.call('connection_status')));
+ok('status lists every paired site, not only the bridge\'s own', d0.origin === 'https://www.stitchslop.com'
+  && d0.paired === false && d0.pairedOrigins?.includes(ORIGIN), JSON.stringify(d0.pairedOrigins));
+const dWait = d.call('wait_for_connection', { timeoutSeconds: 20 }, 30_000);
+await wait(600);
+const t5 = await tab(8797);
+ok('a tab from a PAIRED site is admitted at the upgrade', !t5.rejected, String(t5.rejected ?? ''));
+t5.send?.({ secret: hello.pairingSecret });
+const hello5 = await t5.next?.();
+ok('  ...and attaches with its stored pairing, no token anywhere',
+  hello5?.hello === 'stitchslop-connector' && hello5.pairingSecret === undefined, JSON.stringify(hello5 ?? {}).slice(0, 60));
+t5.serve?.(TOOLS, answer);
+const dText = textOf(await dWait);
+ok('  ...so wait_for_connection alone connects it', /1,234/.test(dText) && /stored pairing/.test(dText), dText.slice(0, 60));
+const d1 = JSON.parse(textOf(await d.call('connection_status')));
+ok('  ...and the bridge now says it serves that site', d1.origin === ORIGIN && d1.paired === true, d1.origin);
+
+const stranger = await tab(8797, 'http://localhost:7777');
+ok('a loopback site with NO pairing is still refused at the upgrade', stranger.rejected === 403, String(stranger.rejected));
+const forger = await tab(8797);
+forger.send?.({ secret: 'not-the-secret' });
+ok('a paired site with the WRONG secret is still refused', (await forger.next?.())?.error === 'bad_credential');
+
+// A token is good only for the site it was issued by, even when the bridge
+// admits two. Seed a second pairing, arm a token for the first, present it from
+// the second.
+const pf = path.join(CFG, 'pairing.json');
+const pairings = JSON.parse(fs.readFileSync(pf, 'utf8'));
+pairings['http://localhost:8888'] = { secret: 'seeded-secret-for-8888-0123456789abcdef' };
+fs.writeFileSync(pf, JSON.stringify(pairings), { mode: 0o600 });
+await d.call('pair', { token: 'tok_aaaaaaaaaaaa', origin: ORIGIN, timeoutSeconds: 5 });
+const crossSite = await tab(8797, 'http://localhost:8888');
+crossSite.send?.({ token: 'tok_aaaaaaaaaaaa' });
+ok('a token armed for one site does not open the bridge to another', !crossSite.rejected
+  && (await crossSite.next?.())?.error === 'bad_credential');
+
+const e = mcp(['--lazy'], {}, { origin: null });
+await e.init();
+const eText = textOf(await e.call('wait_for_connection', { origin: ORIGIN + '/', timeoutSeconds: 10 }));
+ok('wait_for_connection with the line\'s origin shares the bridge serving it', /already connected/.test(eText) && /1,234/.test(eText)
+  && !(await portOpen(8798)), eText.slice(0, 50));
+const f = mcp(['--lazy'], {}, { origin: null });
+await f.init();
+const fText = textOf(await f.call('wait_for_connection', { origin: 'http://localhost:5555', timeoutSeconds: 5 }, 20_000));
+ok('  ...and naming a DIFFERENT site does not borrow that tab', /Still waiting|not paired/.test(fText) && !/1,234/.test(fText), fText.slice(0, 50));
+const fEvil = await f.call('wait_for_connection', { origin: 'https://evil.example' });
+ok('  ...and an origin that is neither production nor loopback is refused', fEvil?.result?.isError === true);
+
+ok('stdout stayed pure JSON-RPC in every bridge',
+  [a, b, c, d, e, f].reduce((n, m) => n + m.junk.length, 0) === 0);
+
+for (const m of [a, b, c, d, e, f]) { try { m.proc.kill(); } catch {} }
+for (const t of [t1, t2, t3, t4, t5, stranger, forger, crossSite]) { try { t.close?.(); } catch {} }
 await wait(200);
 fs.rmSync(CFG, { recursive: true, force: true });
 console.log(`\n${bad ? `FAILED — ${bad} of ${checks}` : `all ${checks} checks passed`}`);
