@@ -168,6 +168,12 @@ const c2 = await cli('call', 'scene.render', '--out', shot);
 const env2 = JSON.parse(c2.stdout || '{}');
 ok('--out writes the picture and replaces dataUrl', c2.status === 0 && fs.existsSync(shot) && !env2.dataUrl && env2.savedTo === shot && env2.savedType === 'image/png');
 ok('bad JSON args exit 64', (await cli('call', 'scene.describe', '{nope')).status === 64);
+// A pipe holds 64KB and Node writes into one asynchronously, so exiting right
+// after the write cut the reply at 65,536 bytes; `cli` reads through a pipe.
+const bigReply = await cli('call', 'scene.describe', '{"big":true}');
+let bigLen = null; try { bigLen = JSON.parse(bigReply.stdout).filler?.length ?? null; } catch {}
+ok('a reply over 64KB arrives whole through a pipe', bigReply.status === 0 && bigLen === 200_000,
+  `${bigReply.stdout.length} bytes, filler ${bigLen}`);
 
 const session = JSON.parse(fs.readFileSync(path.join(CFG, 'session-8797.json'), 'utf8'));
 ok('the session file is owner-only', (fs.statSync(path.join(CFG, 'session-8797.json')).mode & 0o777) === 0o600);

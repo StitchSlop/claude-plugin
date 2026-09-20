@@ -79,6 +79,9 @@ export const TOOLS = [
 ];
 export const answer = (m) => m.command === 'scene.render' ? { ok: true, say: 'Rendered.', dataUrl: `data:image/png;base64,${PNG}`, mmPerPx: 0.2 }
   : m.command === 'object.draw' ? { ok: false, error: 'refused', message: 'A fill needs a closed shape.', say: 'A fill needs a closed shape.', changed: false }
+  // `big` makes the reply larger than a pipe's 64KB buffer: the CLI once cut
+  // anything past 65,536 bytes when its stdout was a pipe.
+  : m.args?.big ? { ok: true, say: 'a big reply', changed: false, filler: 'x'.repeat(200_000) }
   : { ok: true, say: 'two objects, 1,234 stitches', changed: false, items: [{ ordinal: 1, name: 'Leaf', treatment: 'fill', stitches: 1234 }] };
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

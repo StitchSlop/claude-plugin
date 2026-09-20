@@ -262,9 +262,11 @@ async function runClient([verb, ...rest]) {
   // asynchronously and a pipe holds 64KB, so exiting on the next line cut every
   // result over 65,536 bytes: renders, the tool list, a big describe. A file is
   // written synchronously, which is why `> x.json` was whole and `| jq` was not
-  // (mcpTester, 2026-09-19).
-  process.stdout.write(JSON.stringify(out.body, null, 2) + '\n', () =>
-    process.exit(out.body?.ok === false ? 1 : 0));
+  // (mcpTester, 2026-09-19). AWAITED, and the exit follows it here: this
+  // function must never RETURN, or the module falls through into bridge mode
+  // below (a callback exit did exactly that, and broke two CLI tests).
+  await new Promise((resolve) => process.stdout.write(JSON.stringify(out.body, null, 2) + '\n', resolve));
+  process.exit(out.body?.ok === false ? 1 : 0);
 }
 
 if (words.length) await runClient(words);
