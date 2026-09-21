@@ -6,10 +6,11 @@ has a second face for exactly this: a small authenticated HTTP control plane,
 wrapped by the same script as subcommands. Nothing needs restarting. Next
 session, the native tools will simply be there; prefer them when they are.
 
-The script:
+The script's path is given in the design skill's `SKILL.md`, under "The bridge
+script". Put it in a variable:
 
 ```
-BRIDGE="${CLAUDE_SKILL_DIR}/../../bridge/stitchslop-bridge.mjs"
+BRIDGE="<that path>"
 ```
 
 ## 1. Is a bridge already running?
@@ -48,6 +49,7 @@ node "$BRIDGE" call scene.describe
 node "$BRIDGE" call params.set '{"target":{"ordinal":2},"values":{"spacing":0.4}}'
 node "$BRIDGE" call scene.render '{"width":700}' --out /tmp/design.png
 node "$BRIDGE" call background.set '{}' --file image=./logo.png
+node "$BRIDGE" listen          # speech from the Talk button, one line each; run it under Monitor
 ```
 
 - Stdout is the app's envelope as JSON and nothing else. Commentary is on stderr.

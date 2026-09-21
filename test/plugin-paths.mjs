@@ -357,6 +357,86 @@ ok('pair with the line\'s token attaches a paired browser by its pairing', hello
 const used = JSON.parse(fs.readFileSync(pf, 'utf8'))[ORIGIN]?.usedTokens ?? [];
 ok('  ...and the token is left unspent', !used.includes(crypto.createHash('sha256').update('tok_bbbbbbbbbbbb').digest('hex').slice(0, 32)));
 
+/* ============================= listen ===================================== */
+// The app's handoff, 2026-09-20: speech waits in the tab's queue until someone
+// calls voice.listen, and an agent that has ended its turn calls nothing.
+// `listen` is a command a host watches; each line it prints wakes the agent.
+console.log('\nlisten');
+t6.close?.();
+for (let i = 0; i < 40 && JSON.parse(textOf(await d.call('connection_status'))).connected; i++) await wait(100);
+
+/** A tab that answers voice.listen from a script, in order (the last repeats);
+ *  a step of 'drop' closes the socket instead of answering. */
+async function scriptedTab(steps) {
+  const t = await tab(8797);
+  t.send({ secret: hello.pairingSecret });
+  const hi = await t.next();
+  t.send({ tools: TOOLS });
+  (async () => {
+    let i = 0;
+    for (;;) {
+      const m = await t.next(60_000);
+      if (!m || m.closed) return;
+      if (m.id == null || !m.command) continue;
+      if (m.command !== 'voice.listen') { t.send({ ...answer(m), id: m.id }); continue; }
+      const step = steps[Math.min(i++, steps.length - 1)];
+      const r = typeof step === 'function' ? await step(m) : step;
+      if (r === 'drop') { t.close(); return; }
+      t.send({ ...r, id: m.id });
+    }
+  })();
+  return { t, hi };
+}
+const SEL = [{ id: 'o_1', name: 'Square' }];
+const quiet = async () => { await wait(1500); return { ok: true, heard: [], selection: SEL }; };
+const t7 = await scriptedTab([
+  async () => { await wait(300); return { ok: true, heard: [], selection: SEL }; },
+  { ok: true, heard: [{ text: 'make that bigger', atMs: 1790000000001 }, { text: 'now blue', atMs: 1790000000002 }], selection: SEL },
+  'drop',
+]);
+ok('a scripted tab attaches for the listen test', t7.hi?.hello === 'stitchslop-connector');
+
+const listener = spawn('node', [BRIDGE, '--config-dir', CFG, 'listen', '--port', '8797']);
+let heardOut = '';
+listener.stdout.on('data', (c) => { heardOut += c; });
+listener.stderr.on('data', () => {});
+const lines = () => heardOut.split('\n').filter(Boolean);
+for (let i = 0; i < 80 && !lines().some((l) => l.includes('disconnected')); i++) await wait(100);
+const t8 = await scriptedTab([{ ok: true, heard: [{ text: 'and centre it', atMs: 1790000000003 }], selection: SEL }, quiet]);
+for (let i = 0; i < 80 && lines().length < 5; i++) await wait(100);
+await wait(500);                                   // anything extra would arrive now
+listener.kill('SIGTERM');
+const listenExit = await new Promise((r) => listener.on('close', (code) => r(code)));
+const expected = [
+  { heard: 'make that bigger', atMs: 1790000000001, selection: SEL },
+  { heard: 'now blue', atMs: 1790000000002, selection: SEL },
+  { event: 'disconnected' },
+  { event: 'connected' },
+  { heard: 'and centre it', atMs: 1790000000003, selection: SEL },
+];
+ok('listen prints exactly: two utterances, disconnected, connected, one utterance',
+  JSON.stringify(lines().map((l) => JSON.parse(l))) === JSON.stringify(expected), lines().join(' | ').slice(0, 200));
+ok('  ...and SIGTERM ends it quietly, exit 0', listenExit === 0, String(listenExit));
+
+t8.t.close();
+for (let i = 0; i < 40 && JSON.parse(textOf(await d.call('connection_status'))).connected; i++) await wait(100);
+const t9 = await scriptedTab([{ ok: false, error: 'refused', changed: false,
+  message: 'Voice input is not available in this editor.', say: 'Voice input is not available in this editor.' }]);
+const refusedListen = await new Promise((resolve) => {
+  const p = spawn('node', [BRIDGE, '--config-dir', CFG, 'listen', '--port', '8797']);
+  let out = '';
+  p.stdout.on('data', (c) => { out += c; });
+  p.stderr.on('data', () => {});
+  const kill = setTimeout(() => p.kill('SIGKILL'), 15_000);
+  p.on('close', (code) => { clearTimeout(kill); resolve({ code, out }); });
+});
+ok('a refusal ends listen: one "unavailable" line with the app\'s sentence, exit 1', refusedListen.code === 1
+  && refusedListen.out === JSON.stringify({ event: 'unavailable', message: 'Voice input is not available in this editor.' }) + '\n',
+  refusedListen.out.slice(0, 100));
+const noBridge = await cli('listen', '--port', '8799');
+ok('no bridge at start: exit 3, and nothing on stdout', noBridge.status === 3 && noBridge.stdout === '');
+t9.t.close();
+
 ok('stdout stayed pure JSON-RPC in every bridge',
   [a, b, c, d, e, f, g].reduce((n, m) => n + m.junk.length, 0) === 0);
 

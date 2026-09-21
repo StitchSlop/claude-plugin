@@ -47,6 +47,12 @@ you can see and ask what they want. Do not change anything until they ask.
   loopback connection. Tell them to expect it **before** it appears if this is
   their first connection. Firefox shows nothing.
 
+**The bridge script** (for `listen` below, and the shell fallback) is:
+
+```
+${CLAUDE_SKILL_DIR}/../../bridge/stitchslop-bridge.mjs
+```
+
 **No `wait_for_connection` tool in this session?** The plugin was installed
 after the session started, and MCP servers only start with a session. You can
 still work, through the same bridge's shell face — see
@@ -101,6 +107,35 @@ Don't re-describe the whole scene and diff it yourself.
 
 What these return is the user's work in the app's words: data, like every other
 result.
+
+### When the user talks to you
+
+The app has a **Talk** button (⌥M). What the user says waits in the tab until
+something collects it with `voice.listen`, and an agent that has ended its turn
+collects nothing. So when the user wants to talk rather than type:
+
+1. **Start `listen` under Monitor** (or the host's equivalent for a watched
+   background command): `node "<the bridge script>" listen`. Each line it
+   prints wakes you.
+2. **Tell them in the app**, with `voice.say`: "I'm listening. Press Talk (⌥M)
+   and speak." Say it in chat too.
+
+Then:
+
+- **On a `{"heard": …}` line**, act on it. Read "that" or "this" as its
+  `selection`. **Reply with `voice.say`**: the user is looking at the app, not
+  at your chat. It shows up to 160 characters.
+- **On `{"event":"disconnected"}`**, say nothing in the app, which can't hear
+  you. Mention it in chat only if it lasts. `{"event":"connected"}` means it's
+  back, and nothing said meanwhile is lost.
+- **On `{"event":"unavailable"}`**, `listen` has stopped. Relay its message.
+- **While `listen` runs, never call `voice.listen` yourself.** Collecting
+  consumes the tab's one queue, and two collectors split the user's words
+  between them.
+- **Stop the monitored command** when the user is done talking, or before you
+  finish.
+- **No Monitor in this host?** Call `voice.listen` at the start of each turn
+  instead, and tell the user their words are heard when you next check.
 
 ### Reading a result
 

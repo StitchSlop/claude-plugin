@@ -11,6 +11,7 @@
  *   node stitchslop-bridge.mjs --origin <ORIGIN>      run by hand (token in STITCHSLOP_TOKEN)
  *   node stitchslop-bridge.mjs status | tools | wait [SECONDS]
  *   node stitchslop-bridge.mjs call <COMMAND> [JSON-ARGS] [--out FILE] [--port N]
+ *   node stitchslop-bridge.mjs listen [--port N]      the user's speech, one line each
  *
  * Contract: docs/research/BRIDGE_PROTOCOL.md in the app's repo, checked by its
  * scripts/conformance-bridge.mjs. Zero dependencies, because a plugin cannot
@@ -230,6 +231,90 @@ function imageDataUrl(file) {
   return { dataUrl: `data:${mimeType};base64,${bytes.toString('base64')}`, mimeType, bytes: bytes.length, path: abs };
 }
 
+/**
+ * `listen` — WHAT THE USER SAYS, AS LINES A WATCHING HOST WAKES ON.
+ *
+ * The app's Talk button (⌥M) queues speech in the tab until something calls
+ * voice.listen. An agent that has ended its turn calls nothing, so the user's
+ * words sat unheard until they typed in chat (the app's handoff, 2026-09-20:
+ * "are you connected?"). The page cannot wake an agent; a watched command can.
+ * Run this under Claude Code's Monitor and every line it prints wakes the
+ * session.
+ *
+ * So stdout carries ONLY things worth waking for: one JSON line per utterance,
+ * and a connection change once each way. Everything else is stderr.
+ *
+ *   {"heard":"make that bigger","atMs":…,"selection":[…]}
+ *   {"event":"disconnected"}   {"event":"connected"}
+ *   {"event":"unavailable","message":"…"}          then exit 1
+ *
+ * While this runs the agent must not call voice.listen itself: collecting
+ * consumes the tab's one queue, and two collectors split the user's words.
+ */
+async function runListen(first) {
+  let session = first;
+  const quit = () => process.exit(0);
+  process.on('SIGINT', quit);
+  process.on('SIGTERM', quit);
+  const emit = (obj) => new Promise((resolve) => process.stdout.write(JSON.stringify(obj) + '\n', resolve));
+  const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  // The bridge can be REPLACED under us — its session ended and a following
+  // one took the port over, with a new control key. Look it up again rather
+  // than die with the tab still open.
+  const relocate = () => {
+    const live = listSessions();
+    session = live.find((s) => s.port === session.port) ?? (!flags['--port'] && live.length === 1 ? live[0] : session);
+  };
+  let connected = true;
+  let failures = 0;
+  const lost = async () => { if (connected) { connected = false; await emit({ event: 'disconnected' }); } };
+  const back = async () => { if (!connected) { connected = true; await emit({ event: 'connected' }); } };
+
+  for (;;) {
+    let res;
+    try {
+      res = await control(session, 'POST', '/call', { command: 'voice.listen', args: { timeoutSeconds: 25 } }, 45_000);
+    } catch (err) {
+      log(`listen: the bridge on port ${session.port} did not answer (${err?.code ?? err?.message ?? err}); looking again`);
+      await lost(); await pause(2000); relocate(); continue;
+    }
+    if (res.status === 401) { await lost(); await pause(2000); relocate(); continue; }
+    const env = res.body ?? {};
+
+    if (env.ok) {
+      failures = 0;
+      await back();
+      for (const u of Array.isArray(env.heard) ? env.heard : []) {
+        await emit({ heard: String(u?.text ?? ''), atMs: u?.atMs ?? null, selection: env.selection ?? [] });
+      }
+      continue;   // at once: each call waits up to 25s on the tab, so this is not a busy loop
+    }
+    if (env.error === 'disconnected') {
+      await lost();
+      // Park until a tab is back, instead of retrying /call every moment.
+      try {
+        const w = await control(session, 'POST', '/wait', { seconds: 90 }, 100_000);
+        if (w.body?.connected) await back();
+      } catch { await pause(2000); relocate(); }
+      continue;
+    }
+    if (env.error === 'refused' || env.error === 'unknown_command' || env.error === 'bad_arguments') {
+      // Not something waiting fixes: voice is off in this editor, or the app
+      // has no voice.listen at all.
+      await emit({ event: 'unavailable', message: env.message ?? env.say ?? env.error });
+      process.exit(1);
+    }
+    // threw, timeout, unavailable: maybe transient. Stop if it persists, so a
+    // broken app does not keep a watcher spinning.
+    log(`listen: voice.listen failed (${env.error ?? 'unknown'}): ${env.message ?? ''}`);
+    if (++failures >= 3) {
+      await emit({ event: 'unavailable', message: env.message ?? 'voice.listen keeps failing.' });
+      process.exit(1);
+    }
+    await pause(2000);
+  }
+}
+
 /* ====================== client mode: status | tools | wait | call ========= */
 /**
  * Drives a bridge that is ALREADY RUNNING, from an ordinary shell (§4.4). The
@@ -260,6 +345,8 @@ async function runClient([verb, ...rest]) {
     process.exit(3);
   }
 
+  if (verb === 'listen') await runListen(session);   // never returns
+
   let out;
   try {
     if (verb === 'status') out = await control(session, 'GET', '/status');
@@ -286,7 +373,7 @@ async function runClient([verb, ...rest]) {
       }
       out = await control(session, 'POST', '/call', { command: rest[0], args }, CALL_TIMEOUT_MS + 10_000);
     } else {
-      log(`unknown command "${verb}". Try: status, tools, wait, call`);
+      log(`unknown command "${verb}". Try: status, tools, wait, call, listen`);
       process.exit(64);
     }
   } catch (err) {
