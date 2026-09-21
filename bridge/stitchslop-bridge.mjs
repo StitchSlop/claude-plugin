@@ -536,9 +536,57 @@ let clientReady = false;
 
 const rpc = (obj) => process.stdout.write(JSON.stringify(obj) + '\n');
 const toolsChanged = () => { if (clientReady) rpc({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' }); };
+/**
+ * THE PAGE'S TOOL LIST IS UNTRUSTED INPUT, and it goes straight into a model's
+ * context in a session that has a shell. Passed through as it was, a page could
+ * list a tool called `pair` beside this bridge's own, or hand over descriptions
+ * of any size. The origin check and pairing make that page the user's own tab;
+ * this makes a wrong or hostile list harmless.
+ *
+ * The limits sit far above the app's real list (2026-09-21: 94 tools; longest
+ * description 1,782 characters; about 64KB of descriptions in all). Anything
+ * dropped is reported by connection_status, by name and reason, never silently.
+ */
+const TOOL_NAME = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
+const TOOL_LIMITS = { count: 256, description: 8000, title: 200, schemaBytes: 32 * 1024, totalBytes: 1024 * 1024 };
+let droppedTools = [];
+function sanitizeTools(list) {
+  const own = new Set(OWN_TOOLS.map((t) => t.name));
+  const kept = [], dropped = [], seen = new Set();
+  let total = 0;
+  for (const t of Array.isArray(list) ? list : []) {
+    const name = typeof t?.name === 'string' ? t.name : null;
+    const drop = (reason) => dropped.push({ name: name ?? (t && typeof t === 'object' ? String(t.name ?? '(no name)').slice(0, 64) : '(not an object)'), reason });
+    if (!name || !TOOL_NAME.test(name)) { drop('not a valid tool name'); continue; }
+    if (own.has(name)) { drop('the name of one of this bridge\'s own tools'); continue; }
+    if (seen.has(name)) { drop('listed twice; the first is kept'); continue; }
+    if (kept.length >= TOOL_LIMITS.count) { drop(`over the limit of ${TOOL_LIMITS.count} tools`); continue; }
+    const schema = t.inputSchema && typeof t.inputSchema === 'object' && !Array.isArray(t.inputSchema) ? t.inputSchema : { type: 'object' };
+    const schemaBytes = JSON.stringify(schema).length;
+    if (schemaBytes > TOOL_LIMITS.schemaBytes) { drop(`input schema over ${TOOL_LIMITS.schemaBytes / 1024}KB`); continue; }
+    const cut = (v, n) => { const str = typeof v === 'string' ? v : ''; return str.length > n ? `${str.slice(0, n - 1)}…` : str; };
+    const tool = {
+      name,
+      ...(typeof t.title === 'string' ? { title: cut(t.title, TOOL_LIMITS.title) } : {}),
+      description: cut(t.description, TOOL_LIMITS.description),
+      inputSchema: schema,
+      ...(t.annotations && typeof t.annotations === 'object' && !Array.isArray(t.annotations) ? { annotations: t.annotations } : {}),
+    };
+    const bytes = JSON.stringify(tool).length;
+    if (total + bytes > TOOL_LIMITS.totalBytes) { drop(`the whole list would pass ${TOOL_LIMITS.totalBytes / 1024 / 1024}MB`); continue; }
+    total += bytes;
+    seen.add(name);
+    kept.push(tool);
+  }
+  return { kept, dropped };
+}
+
 const setTools = (tools) => {
   const before = JSON.stringify(toolsCache);
-  toolsCache = Array.isArray(tools) ? tools : [];
+  const { kept, dropped } = sanitizeTools(tools);
+  toolsCache = kept;
+  droppedTools = dropped;
+  if (dropped.length) log(`dropped ${dropped.length} of the page's tools: ${dropped.map((d) => `${d.name} (${d.reason})`).join('; ').slice(0, 400)}`);
   if (JSON.stringify(toolsCache) !== before) toolsChanged();
 };
 
@@ -668,6 +716,7 @@ function statusBody() {
     paired: secretsFor(ORIGIN).length > 0, pairedOrigins: pairedOrigins(), tools: toolsCache.map((t) => t.name),
     attempts, lastAttemptAt: lastAttemptAt ? new Date(lastAttemptAt).toISOString() : null, refusals: refusalsSince(0),
     listeners: activeListeners(),
+    droppedTools,
     attachedBy: page ? attachedBy : null,
     message: page ? 'A Stitch Slop tab is connected.'
       : 'No tab is connected yet. The tab attaches on its own while "Enable Agent Connections" is on.',
@@ -1346,6 +1395,8 @@ async function toolStatus() {
     connectionAttempts: mode === 'follower' ? follow?.attempts : attempts,
     lastAttemptAt: mode === 'follower' ? follow?.lastAttemptAt : (lastAttemptAt ? new Date(lastAttemptAt).toISOString() : null),
     recentRefusals: mode === 'follower' ? (follow?.refusals ?? []) : refusalsSince(0),
+    // The page's tools this bridge would not list, and why. Normally empty.
+    ...(mode !== 'follower' && droppedTools.length ? { droppedTools } : {}),
     note: mode === 'idle' ? 'Nothing is open yet. wait_for_connection opens the bridge.'
       : mode === 'follower' ? 'Sharing a bridge another process owns.' : undefined,
   }, null, 1));
