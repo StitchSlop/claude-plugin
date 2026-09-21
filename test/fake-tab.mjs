@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * A stand-in for the Stitch Slop tab, for working on the plugin without the app.
  *

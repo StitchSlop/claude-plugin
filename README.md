@@ -91,6 +91,10 @@ means. The details are in
 See [SECURITY.md](SECURITY.md): what the bridge can do on your computer, what
 limits it, and how to report a problem privately.
 
+## Licence
+
+[Apache License 2.0](LICENSE). Copyright 2026 William Osman; see [NOTICE](NOTICE).
+
 ---
 
 ## Development

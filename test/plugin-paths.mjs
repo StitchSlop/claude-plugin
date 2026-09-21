@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * The paths a PLUGIN adds on top of the wire protocol: lazy binding, `pair`,
  * following another bridge, taking over when it dies, two tabs, the shell CLI.

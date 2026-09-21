@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: Apache-2.0
 /**
  * Stitch Slop bridge — the plugin's transport, wire protocol 1.
  *
