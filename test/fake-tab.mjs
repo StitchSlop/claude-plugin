@@ -107,20 +107,30 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const utterAfter = Number(arg('--utter-after', 20)) * 1000;
   let utterAt = null;
   let uttered = false;
+  // --voice-on-after N: the app's voice switch, off until N seconds after the
+  // first attach, then on. Flipping it ends a waiting voice.listen at once.
+  const voiceAfter = arg('--voice-on-after') == null ? null : Number(arg('--voice-on-after')) * 1000;
+  let voiceAt = null;
+  const voiceIsOn = () => voiceAfter == null || Date.now() >= voiceAt;
   const VOICE_TOOLS = [
-    { name: 'voice.listen', description: 'Hear what the user said.', inputSchema: { type: 'object' } },
+    { name: 'voice.listen', description: voiceAfter == null ? 'Hear what the user said.'
+      : 'Hear what the user said. `voiceOn` says whether the user has voice switched on.', inputSchema: { type: 'object' } },
     { name: 'voice.say', description: 'Reply to the user on screen.', inputSchema: { type: 'object' } },
   ];
   const listenAnswer = async (m) => {
     const until = Date.now() + Math.min(25, Number(m.args?.timeoutSeconds) || 20) * 1000;
+    const wasOn = voiceIsOn();
+    const v = () => (voiceAfter == null ? {} : { voiceOn: voiceIsOn() });
     while (Date.now() < until) {
-      if (utter && !uttered && Date.now() >= utterAt) {
+      if (voiceIsOn() !== wasOn) return { ok: true, heard: [], selection: [{ id: 'o_1', name: 'Leaf' }], ...v(),
+        say: 'The user just switched voice on. Tell them you are listening, and that they press Talk (⌥M) to speak.' };
+      if (utter && !uttered && voiceIsOn() && Date.now() >= utterAt) {
         uttered = true;
-        return { ok: true, heard: [{ text: utter, atMs: Date.now() }], selection: [{ id: 'o_1', name: 'Leaf' }], say: `The user said: “${utter}”` };
+        return { ok: true, heard: [{ text: utter, atMs: Date.now() }], selection: [{ id: 'o_1', name: 'Leaf' }], ...v(), say: `The user said: “${utter}”` };
       }
       await new Promise((r) => setTimeout(r, 200));
     }
-    return { ok: true, heard: [], selection: [{ id: 'o_1', name: 'Leaf' }], say: 'Nothing was said.' };
+    return { ok: true, heard: [], selection: [{ id: 'o_1', name: 'Leaf' }], ...v(), say: voiceIsOn() ? 'Nothing was said.' : 'Voice is off.' };
   };
   for (;;) {
     for (const port of ports) {
@@ -132,6 +142,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       if (hello.pairingSecret) { credential.secret = hello.pairingSecret; }
       console.error(`attached on port ${port}`);
       utterAt ??= Date.now() + utterAfter;
+      voiceAt ??= Date.now() + (voiceAfter ?? 0);
       t.send({ tools: utter ? [...TOOLS, ...VOICE_TOOLS] : TOOLS });
       (async () => {
         for (;;) {

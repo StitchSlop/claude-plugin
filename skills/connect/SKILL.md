@@ -23,8 +23,10 @@ Arguments: $ARGUMENTS
    `select:Monitor`. Leave it running. It prints nothing until the user presses
    Talk and speaks, so an unused one costs nothing, and without it the Talk
    button reaches no one. If the result says a `listen` is already running,
-   start nothing. Once it's running, send `voice.say`: "I'm listening. Press
-   Talk (⌥M) and speak."
+   start nothing. **Greet when the result says to.** The app's voice switch is
+   off by default, so with the switch, send `voice.say` "I'm listening. Press
+   Talk (⌥M) and speak." only when `listen` prints `{"event":"voice-on"}`.
+   Without it, send that as soon as `listen` is running.
 5. Tell the user what you can see and ask what they want to do. Change nothing
    until they say.
 6. If it does not connect, read what the wait says the bridge saw. Refusals

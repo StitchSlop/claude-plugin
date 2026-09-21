@@ -368,11 +368,13 @@ for (let i = 0; i < 40 && JSON.parse(textOf(await d.call('connection_status'))).
 
 /** A tab that answers voice.listen from a script, in order (the last repeats);
  *  a step of 'drop' closes the socket instead of answering. */
-async function scriptedTab(steps) {
+async function scriptedTab(steps, { voiceSwitch = false } = {}) {
   const t = await tab(8797);
   t.send({ secret: hello.pairingSecret });
   const hi = await t.next();
-  t.send({ tools: [...TOOLS, { name: 'voice.listen', description: 'Hear what the user said.', inputSchema: { type: 'object' } }] });
+  // An app with the voice switch documents `voiceOn` in voice.listen's description.
+  const desc = voiceSwitch ? 'Hear what the user said. `voiceOn` says whether voice is switched on.' : 'Hear what the user said.';
+  t.send({ tools: [...TOOLS, { name: 'voice.listen', description: desc, inputSchema: { type: 'object' } }] });
   (async () => {
     let i = 0;
     for (;;) {
@@ -402,7 +404,7 @@ await wait(300);
 // nowhere (the app's follow-up handoff, 2026-09-20).
 const beforeListen = textOf(await d.call('wait_for_connection', { timeoutSeconds: 5 }));
 ok('connecting to a tab with voice.listen hands over the exact listen command, config dir included',
-  beforeListen.includes(`node "${BRIDGE}" listen --port 8797 --config-dir "${fs.realpathSync(CFG)}"`) || beforeListen.includes(`node "${BRIDGE}" listen --port 8797 --config-dir "${CFG}"`) && /select:Monitor/.test(beforeListen), beforeListen.slice(-260));
+  /Once it is running — not before/.test(beforeListen) && beforeListen.includes(`node "${BRIDGE}" listen --port 8797 --config-dir "${fs.realpathSync(CFG)}"`) || beforeListen.includes(`node "${BRIDGE}" listen --port 8797 --config-dir "${CFG}"`) && /select:Monitor/.test(beforeListen), beforeListen.slice(-260));
 
 // Run EXACTLY the command the connect result handed over, not one written
 // here. A hand-written one hid a missing --config-dir.
@@ -457,9 +459,45 @@ const refusedListen = await new Promise((resolve) => {
 ok('a refusal ends listen: one "unavailable" line with the app\'s sentence, exit 1', refusedListen.code === 1
   && refusedListen.out === JSON.stringify({ event: 'unavailable', message: 'Voice input is not available in this editor.' }) + '\n',
   refusedListen.out.slice(0, 100));
+t9.t.close();
+for (let i = 0; i < 40 && JSON.parse(textOf(await d.call('connection_status'))).connected; i++) await wait(100);
+
+// The user's voice switch (the app's 036735f): off by default, `voiceOn` on
+// every reply, and a wait that ends the moment they flip it.
+const off = { ok: true, heard: [], voiceOn: false, selection: SEL, say: 'Voice is off.' };
+const t10 = await scriptedTab([
+  off, off,
+  { ok: true, heard: [], voiceOn: true, selection: SEL, say: 'The user just switched voice on.' },
+  { ok: true, heard: [{ text: 'make it red', atMs: 1790000000004 }], voiceOn: true, selection: SEL },
+  { ok: true, heard: [], voiceOn: false, voiceSupport: 'browser', selection: SEL,
+    say: 'Voice cannot work in this browser: it needs Google Chrome on a computer.' },
+  async () => { await wait(1500); return off; },
+], { voiceSwitch: true });
+const switchAdvice = textOf(await d.call('wait_for_connection', { timeoutSeconds: 5 }));
+ok('with a voice switch, the connect result says to greet on voice-on, not at once',
+  /do not greet yet/.test(switchAdvice) && /"voice-on"/.test(switchAdvice) && !/Once it is running — not before/.test(switchAdvice),
+  switchAdvice.slice(-220));
+const vArgs = [...(/^\s*node (.+ listen .*)$/m.exec(switchAdvice)?.[1] ?? '').matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2]);
+const vl = spawn('node', vArgs);
+const vExit = new Promise((r) => vl.on('close', (code) => r(code)));
+let vOut = '';
+vl.stdout.on('data', (c) => { vOut += c; });
+vl.stderr.on('data', () => {});
+for (let i = 0; i < 120 && vOut.split('\n').filter(Boolean).length < 4; i++) await wait(100);
+await wait(2500);                                  // a repeat 'off' must print nothing
+vl.kill('SIGTERM');
+await vExit;
+ok('listen reports the voice switch: off at first, on, what was said, off with the reason',
+  vOut === [
+    { event: 'voice-off' },
+    { event: 'voice-on' },
+    { heard: 'make it red', atMs: 1790000000004, selection: SEL },
+    { event: 'voice-off', voiceSupport: 'browser', message: 'Voice cannot work in this browser: it needs Google Chrome on a computer.' },
+  ].map((o) => JSON.stringify(o) + '\n').join(''), vOut.replace(/\n/g, ' | ').slice(0, 260));
+t10.t.close();
+
 const noBridge = await cli('listen', '--port', '8799');
 ok('no bridge at start: exit 3, and nothing on stdout', noBridge.status === 3 && noBridge.stdout === '');
-t9.t.close();
 
 ok('stdout stayed pure JSON-RPC in every bridge',
   [a, b, c, d, e, f, g].reduce((n, m) => n + m.junk.length, 0) === 0);

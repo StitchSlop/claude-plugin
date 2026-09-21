@@ -22,9 +22,9 @@ you may have to load Monitor first with ToolSearch, `select:Monitor`. The app
 has a **Talk** button (⌥M), and users press it without announcing it in chat.
 Without `listen` their words wait unheard until they type. It prints nothing
 until they speak, so leaving it running costs nothing. If the result says one is
-already running, start nothing. Once it's running, say in the app with
-`voice.say`: "I'm listening. Press Talk (⌥M) and speak." See *When the user
-talks to you*.
+already running, start nothing. The connect result also says when to greet:
+the app's voice switch is off by default, so the "I'm listening" greeting waits
+for `listen` to print `{"event":"voice-on"}`. See *When the user talks to you*.
 
 Then greet the user with what you can see and ask what they want. Do not change
 anything until they ask.
@@ -131,6 +131,15 @@ If it isn't running, start it with the command from the connect result, or
 - **On a `{"heard": …}` line**, act on it. Read "that" or "this" as its
   `selection`. **Reply with `voice.say`**: the user is looking at the app, not
   at your chat. It shows up to 160 characters.
+- **On `{"event":"voice-on"}`**, the user has just switched voice on to talk
+  to you. Reply in the app with `voice.say`: "I'm listening. Press Talk (⌥M)
+  and speak."
+- **On `{"event":"voice-off"}`**, say nothing, and leave `listen` running so
+  their next switch-on reaches you. Voice is off by default, so a first line of
+  `voice-off` is normal, not an error. If it carries `voiceSupport`, voice
+  can't work in their browser at all: pass its `message` on in chat (for
+  example, that it needs Google Chrome on a computer).
+- An app with no voice switch prints neither event; there, voice is always on.
 - **On `{"event":"disconnected"}` or `{"event":"connected"}`, say nothing,
   in the app or in chat, and end your turn.** A tab that reloads or sleeps
   drops and comes back by itself, and nothing said meanwhile is lost. If it is

@@ -254,6 +254,8 @@ function imageDataUrl(file) {
  *
  *   {"heard":"make that bigger","atMs":…,"selection":[…]}
  *   {"event":"disconnected"}   {"event":"connected"}
+ *   {"event":"voice-on"}   {"event":"voice-off"}    the user's voice switch, on the
+ *                                                   first reply and on each change
  *   {"event":"unavailable","message":"…"}          then exit 1
  *
  * While this runs the agent must not call voice.listen itself: collecting
@@ -276,6 +278,13 @@ async function runListen(first) {
   };
   let connected = true;
   let failures = 0;
+  /** The user's voice switch as last reported: null before the first reply.
+   *  An app without the switch sends no `voiceOn`, which means always on, and
+   *  earns no event — there is nothing to switch. */
+  let voiceOn = null;
+  const voiceEvent = (on, env) => ({ event: on ? 'voice-on' : 'voice-off',
+    // Why it cannot be on in this browser, in the app's own words to pass on.
+    ...(!on && env.voiceSupport ? { voiceSupport: env.voiceSupport, message: env.say ?? null } : {}) });
   const lost = async () => { if (connected) { connected = false; await emit({ event: 'disconnected' }); } };
   const back = async () => { if (!connected) { connected = true; await emit({ event: 'connected' }); } };
 
@@ -294,6 +303,10 @@ async function runListen(first) {
     if (env.ok) {
       failures = 0;
       await back();
+      const reported = typeof env.voiceOn === 'boolean';
+      const on = reported ? env.voiceOn : true;
+      if (voiceOn === null ? reported : on !== voiceOn) await emit(voiceEvent(on, env));
+      voiceOn = on;
       const heard = Array.isArray(env.heard) ? env.heard : [];
       for (const u of heard) {
         await emit({ heard: String(u?.text ?? ''), atMs: u?.atMs ?? null, selection: env.selection ?? [] });
@@ -1088,6 +1101,13 @@ const AUTH_LINE = {
  * (the app's handoff, 2026-09-20). A tool result is read on every connect in a
  * way a skill paragraph is not, so it goes here, with the exact command.
  */
+/** Does the app have the user's voice on/off switch? Its voice.listen then
+ *  documents `voiceOn` — the tool description is the documentation. */
+const hasVoiceSwitch = () => {
+  const t = toolsCache.find((x) => x.name === 'voice.listen');
+  return !!t && /voiceOn/.test(`${t.description ?? ''} ${JSON.stringify(t.inputSchema ?? {})}`);
+};
+
 function listenAdvice() {
   if (!toolsCache.some((t) => t.name === 'voice.listen')) return null;
   const running = mode === 'follower' ? (follow?.listeners ?? []) : activeListeners();
@@ -1105,8 +1125,14 @@ function listenAdvice() {
     + 'it running. It prints nothing until they speak, then one line per thing they said, and each line wakes you:\n'
     + `  node "${SELF_PATH}" listen --port ${port}${where}\n`
     + 'Run it exactly as given.\n'
-    + 'In Claude Code, Monitor may be a deferred tool: load it first with ToolSearch, query "select:Monitor". Once it '
-    + 'is running — not before — tell the user in the app with voice.say: "I\'m listening. Press Talk (⌥M) and speak." '
+    + 'In Claude Code, Monitor may be a deferred tool: load it first with ToolSearch, query "select:Monitor". '
+    + (hasVoiceSwitch()
+      ? 'This app has a voice switch, OFF by default, so do not greet yet. When `listen` prints {"event":"voice-on"}, '
+        + 'the user has just switched it on to talk: then tell them in the app with voice.say, "I\'m listening. '
+        + 'Press Talk (⌥M) and speak." A first line of {"event":"voice-off"} is normal: say nothing. If it carries '
+        + '`voiceSupport`, voice cannot work in their browser: pass its `message` on in chat. '
+      : 'Once it is running — not before — tell the user in the app with voice.say: "I\'m listening. Press Talk '
+        + '(⌥M) and speak." ')
     + 'While it runs, never call voice.listen yourself.';
 }
 
