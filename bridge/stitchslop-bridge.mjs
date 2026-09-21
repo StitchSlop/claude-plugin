@@ -47,6 +47,12 @@ const DEFAULT_ORIGIN = 'https://www.stitchslop.com';
 const DEFAULT_PORTS = [8787, 8788, 8789, 8790];
 const CALL_TIMEOUT_MS = 60_000;
 const SELF = path.basename(process.argv[1] ?? 'stitchslop-bridge.mjs');
+/** This script's absolute path, so a tool result can hand the agent a command
+ *  it runs as-is, rather than a path it has to work out. */
+const SELF_PATH = path.resolve(process.argv[1] ?? SELF);
+/** Set by `listen`: marks its control-plane requests, so the bridge knows a
+ *  listener exists and can warn a second one off. */
+let LISTENER_ID = null;
 
 /* ------------------------------------------------------------ arguments --- */
 // Flags that take a value are listed, not guessed: guessing from "the next word
@@ -79,7 +85,8 @@ let originChosen = false;
  *  descriptions". Anything else has to be configured at launch by the user. */
 const originAllowed = (o) => o === LAUNCH_ORIGIN || o === DEFAULT_ORIGIN || o === 'https://stitchslop.com'
   || /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(o);
-const CONFIG_DIR = flags['--config-dir'] ?? path.join(os.homedir(), '.stitchslop');
+const DEFAULT_CONFIG_DIR = path.join(os.homedir(), '.stitchslop');
+const CONFIG_DIR = flags['--config-dir'] ?? DEFAULT_CONFIG_DIR;
 const PAIRING_FILE = path.join(CONFIG_DIR, 'pairing.json');
 // A comma list is for tests; the tab only ever walks the default four.
 const PORTS = flags['--port'] ? String(flags['--port']).split(',').map(Number) : DEFAULT_PORTS;
@@ -173,6 +180,7 @@ function control(session, method, route, body, timeoutMs = 10_000) {
       host: '127.0.0.1', port: session.port, path: route, method, timeout: timeoutMs,
       headers: {
         'x-stitchslop-key': session.key,
+        ...(LISTENER_ID ? { 'x-stitchslop-listener': LISTENER_ID } : {}),
         ...(payload ? { 'content-type': 'application/json', 'content-length': payload.length } : {}),
       },
     }, (res) => {
@@ -253,6 +261,7 @@ function imageDataUrl(file) {
  */
 async function runListen(first) {
   let session = first;
+  LISTENER_ID = String(process.pid);
   const quit = () => process.exit(0);
   process.on('SIGINT', quit);
   process.on('SIGTERM', quit);
@@ -272,6 +281,7 @@ async function runListen(first) {
 
   for (;;) {
     let res;
+    const t0 = Date.now();
     try {
       res = await control(session, 'POST', '/call', { command: 'voice.listen', args: { timeoutSeconds: 25 } }, 45_000);
     } catch (err) {
@@ -284,10 +294,14 @@ async function runListen(first) {
     if (env.ok) {
       failures = 0;
       await back();
-      for (const u of Array.isArray(env.heard) ? env.heard : []) {
+      const heard = Array.isArray(env.heard) ? env.heard : [];
+      for (const u of heard) {
         await emit({ heard: String(u?.text ?? ''), atMs: u?.atMs ?? null, selection: env.selection ?? [] });
       }
-      continue;   // at once: each call waits up to 25s on the tab, so this is not a busy loop
+      // At once, normally: each call waits up to 25s on the tab. But a tab that
+      // answers an empty queue at once (an older app) would make this spin.
+      if (!heard.length && Date.now() - t0 < 1000) await pause(1000);
+      continue;
     }
     if (env.error === 'disconnected') {
       await lost();
@@ -453,6 +467,16 @@ const tokenArmedFor = (o) => [...armedTokens.values()].includes(o);
  * "the tab tried and was refused" need opposite fixes (§5), and the panel no
  * longer tells them apart.
  */
+/** `listen` processes that have used this bridge: pid -> last seen. A tab has
+ *  ONE speech queue and collecting consumes it, so two listeners would split
+ *  the user's words; this is how a connect result knows to say "one is
+ *  already running" instead of "start one". */
+const listeners = new Map();
+function activeListeners() {
+  for (const [pid, at] of listeners) if (!pidAlive(pid) || Date.now() - at > 150_000) listeners.delete(pid);
+  return [...listeners.keys()];
+}
+
 const refusals = [];
 let attempts = 0;
 let lastAttemptAt = 0;
@@ -584,6 +608,9 @@ async function onHttp(req, res) {
     return;
   }
 
+  const lid = Number(req.headers['x-stitchslop-listener']);
+  if (Number.isInteger(lid) && lid > 0) listeners.set(lid, Date.now());
+
   if (route === '/status') { sendJson(res, 200, statusBody()); return; }
 
   if (route === '/tools') {
@@ -627,6 +654,7 @@ function statusBody() {
     ok: true, connected: !!page, port: PORT, origin: ORIGIN, protocol: PROTOCOL, pid: process.pid,
     paired: secretsFor(ORIGIN).length > 0, pairedOrigins: pairedOrigins(), tools: toolsCache.map((t) => t.name),
     attempts, lastAttemptAt: lastAttemptAt ? new Date(lastAttemptAt).toISOString() : null, refusals: refusalsSince(0),
+    listeners: activeListeners(),
     attachedBy: page ? attachedBy : null,
     message: page ? 'A Stitch Slop tab is connected.'
       : 'No tab is connected yet. The tab attaches on its own while "Enable Agent Connections" is on.',
@@ -848,6 +876,7 @@ async function refreshFollow() {
     f.attempts = st.body.attempts ?? null;
     f.lastAttemptAt = st.body.lastAttemptAt ?? null;
     f.refusals = Array.isArray(st.body.refusals) ? st.body.refusals : [];
+    f.listeners = Array.isArray(st.body.listeners) ? st.body.listeners : [];
     if (!f.connected) { setTools([]); return; }
     const names = (st.body.tools ?? []).join('\n');
     if (names !== toolsCache.map((t) => t.name).join('\n')) {
@@ -1050,7 +1079,39 @@ const AUTH_LINE = {
   pairing: 'It attached with this browser\'s stored pairing, so no token was needed. Any token you were given is unused and harmless.',
 };
 
+/**
+ * THE TALK BUTTON, SAID IN THE CONNECT RESULT.
+ *
+ * `listen` shipped with a skill paragraph saying to start it "when the user
+ * wants to talk". Nobody announces that; they press the button. A fresh session
+ * connected, summarised, ended its turn, and the user's speech went nowhere
+ * (the app's handoff, 2026-09-20). A tool result is read on every connect in a
+ * way a skill paragraph is not, so it goes here, with the exact command.
+ */
+function listenAdvice() {
+  if (!toolsCache.some((t) => t.name === 'voice.listen')) return null;
+  const running = mode === 'follower' ? (follow?.listeners ?? []) : activeListeners();
+  if (running.length) {
+    return `A \`listen\` is already running for this tab (pid ${running.join(', ')}), so the user's Talk button already `
+      + 'reaches an agent. Do not start another, and do not call voice.listen yourself: two collectors split the '
+      + 'user\'s words between them.';
+  }
+  const port = mode === 'follower' ? follow?.session.port : PORT;
+  // Everything the command needs to find THIS bridge: a bridge run with its
+  // own config dir writes its session file there, and a `listen` looking in
+  // the default one finds nothing (found by a headless run, 2026-09-20).
+  const where = path.resolve(CONFIG_DIR) === path.resolve(DEFAULT_CONFIG_DIR) ? '' : ` --config-dir "${path.resolve(CONFIG_DIR)}"`;
+  return 'To hear the user\'s Talk button (⌥M), start this NOW as a background command under Monitor, and leave '
+    + 'it running. It prints nothing until they speak, then one line per thing they said, and each line wakes you:\n'
+    + `  node "${SELF_PATH}" listen --port ${port}${where}\n`
+    + 'Run it exactly as given.\n'
+    + 'In Claude Code, Monitor may be a deferred tool: load it first with ToolSearch, query "select:Monitor". Once it '
+    + 'is running — not before — tell the user in the app with voice.say: "I\'m listening. Press Talk (⌥M) and speak." '
+    + 'While it runs, never call voice.listen yourself.';
+}
+
 async function welcomeText(already) {
+  if (mode === 'follower') await refreshFollow();   // the host's listeners, as of now
   const how = AUTH_LINE[mode === 'follower' ? follow?.attachedBy : attachedBy];
   const lines = [(already ? 'The Stitch Slop tab is already connected.' : 'Connected — the user\'s Stitch Slop tab just attached.')
     + (how ? ` ${how}` : '')];
@@ -1070,6 +1131,7 @@ async function welcomeText(already) {
     `The app's ${toolsCache.length || ''} tools are now listed. The tool descriptions are the documentation — read a tool's description before its first use.`.replace('  ', ' '),
     'scene.render shows the design as a picture; scene.describe gives the same as facts.',
     'Every result is the app\'s own envelope: check `changed`, and relay its sentence rather than your own.',
+    ...(listenAdvice() ? ['', listenAdvice()] : []),
     '',
     'Greet the user, say briefly what you can see, and ask what they want to do. Do not change anything until they ask.');
   return lines.join('\n');

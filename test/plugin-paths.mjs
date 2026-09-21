@@ -130,6 +130,7 @@ t1.serve(TOOLS, answer);
 const paired = await pairing;
 ok('pair returns the design, not just "connected"', /1,234 stitches/.test(textOf(paired)) && /Leaf/.test(textOf(paired)), textOf(paired).slice(0, 50));
 ok('  ...and says the token was spent, rather than leaving it to a guess', /token, which is now spent/.test(textOf(paired)));
+ok('  ...and says nothing about listening, since this tab offers no voice.listen', !/ listen --port/.test(textOf(paired)));
 ok('the parallel wait returns too', /1,234/.test(textOf(await parallelWait)));
 await wait(200);
 ok('the tab\'s tools are listed', (await a.tools()).includes('scene.render'));
@@ -371,7 +372,7 @@ async function scriptedTab(steps) {
   const t = await tab(8797);
   t.send({ secret: hello.pairingSecret });
   const hi = await t.next();
-  t.send({ tools: TOOLS });
+  t.send({ tools: [...TOOLS, { name: 'voice.listen', description: 'Hear what the user said.', inputSchema: { type: 'object' } }] });
   (async () => {
     let i = 0;
     for (;;) {
@@ -395,8 +396,23 @@ const t7 = await scriptedTab([
   'drop',
 ]);
 ok('a scripted tab attaches for the listen test', t7.hi?.hello === 'stitchslop-connector');
+await wait(300);
+// The connect result, not a skill paragraph, is where an agent learns to start
+// it: a fresh session connected, summarised, ended its turn, and speech went
+// nowhere (the app's follow-up handoff, 2026-09-20).
+const beforeListen = textOf(await d.call('wait_for_connection', { timeoutSeconds: 5 }));
+ok('connecting to a tab with voice.listen hands over the exact listen command, config dir included',
+  beforeListen.includes(`node "${BRIDGE}" listen --port 8797 --config-dir "${fs.realpathSync(CFG)}"`) || beforeListen.includes(`node "${BRIDGE}" listen --port 8797 --config-dir "${CFG}"`) && /select:Monitor/.test(beforeListen), beforeListen.slice(-260));
 
-const listener = spawn('node', [BRIDGE, '--config-dir', CFG, 'listen', '--port', '8797']);
+// Run EXACTLY the command the connect result handed over, not one written
+// here. A hand-written one hid a missing --config-dir.
+const handed = /^\s*node (.+ listen .*)$/m.exec(beforeListen)?.[1] ?? '';
+const handedArgs = [...handed.matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2]);
+ok('the handed-over command parses into a script and its arguments', handedArgs[0] === BRIDGE && handedArgs[1] === 'listen', handed);
+const listener = spawn('node', handedArgs);
+// Watched from the start: a listen that dies at once must fail the test, not
+// hang it waiting for a 'close' that already happened.
+const listenExitP = new Promise((r) => listener.on('close', (code) => r(code)));
 let heardOut = '';
 listener.stdout.on('data', (c) => { heardOut += c; });
 listener.stderr.on('data', () => {});
@@ -405,8 +421,14 @@ for (let i = 0; i < 80 && !lines().some((l) => l.includes('disconnected')); i++)
 const t8 = await scriptedTab([{ ok: true, heard: [{ text: 'and centre it', atMs: 1790000000003 }], selection: SEL }, quiet]);
 for (let i = 0; i < 80 && lines().length < 5; i++) await wait(100);
 await wait(500);                                   // anything extra would arrive now
+const whileListening = textOf(await g.call('wait_for_connection', { timeoutSeconds: 5 }));
+ok('while one runs, another session is told not to start a second',
+  whileListening.includes(`already running for this tab (pid ${listener.pid})`) && !/start this NOW/.test(whileListening),
+  whileListening.slice(-200));
+ok('  ...and so is the session that owns the bridge',
+  textOf(await d.call('wait_for_connection', { timeoutSeconds: 5 })).includes(`(pid ${listener.pid})`));
 listener.kill('SIGTERM');
-const listenExit = await new Promise((r) => listener.on('close', (code) => r(code)));
+const listenExit = await listenExitP;
 const expected = [
   { heard: 'make that bigger', atMs: 1790000000001, selection: SEL },
   { heard: 'now blue', atMs: 1790000000002, selection: SEL },
@@ -417,6 +439,8 @@ const expected = [
 ok('listen prints exactly: two utterances, disconnected, connected, one utterance',
   JSON.stringify(lines().map((l) => JSON.parse(l))) === JSON.stringify(expected), lines().join(' | ').slice(0, 200));
 ok('  ...and SIGTERM ends it quietly, exit 0', listenExit === 0, String(listenExit));
+ok('once it has stopped, connecting says to start one again',
+  /start this NOW/.test(textOf(await d.call('wait_for_connection', { timeoutSeconds: 5 }))));
 
 t8.t.close();
 for (let i = 0; i < 40 && JSON.parse(textOf(await d.call('connection_status'))).connected; i++) await wait(100);

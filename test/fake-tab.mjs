@@ -65,6 +65,13 @@ export function tab(port, origin) {
         if (buf.length < off + len) return;
         const payload = buf.subarray(off, off + len); buf = buf.subarray(off + len);
         if (op === 0x1) { try { deliver(JSON.parse(payload.toString())); } catch {} }
+        // Answer pings as a browser does, unasked. Without this the bridge's
+        // heartbeat drops the stand-in after 75s, which reads as the tab leaving.
+        if (op === 0x9) {
+          const mask = crypto.randomBytes(4), body = Buffer.from(payload);
+          for (let i = 0; i < body.length; i++) body[i] ^= mask[i & 3];
+          sock.write(Buffer.concat([Buffer.from([0x8a, 0x80 | body.length]), mask, body]));
+        }
       }
     });
     sock.on('connect', () => sock.write(`GET / HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\n`
@@ -93,6 +100,28 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   // --secret plays a browser that is already paired; --token one that is not.
   const credential = arg('--secret') ? { secret: arg('--secret') } : { token: arg('--token', 'tok_fake00000000') };
   const ports = arg('--ports', '8787,8788,8789,8790').split(',').map(Number);
+  // --utter "make it red" --utter-after 20: the user presses Talk and says
+  // that, N seconds after the tab first attaches. voice.listen waits for it,
+  // as the app's does, and hands it over once.
+  const utter = arg('--utter');
+  const utterAfter = Number(arg('--utter-after', 20)) * 1000;
+  let utterAt = null;
+  let uttered = false;
+  const VOICE_TOOLS = [
+    { name: 'voice.listen', description: 'Hear what the user said.', inputSchema: { type: 'object' } },
+    { name: 'voice.say', description: 'Reply to the user on screen.', inputSchema: { type: 'object' } },
+  ];
+  const listenAnswer = async (m) => {
+    const until = Date.now() + Math.min(25, Number(m.args?.timeoutSeconds) || 20) * 1000;
+    while (Date.now() < until) {
+      if (utter && !uttered && Date.now() >= utterAt) {
+        uttered = true;
+        return { ok: true, heard: [{ text: utter, atMs: Date.now() }], selection: [{ id: 'o_1', name: 'Leaf' }], say: `The user said: “${utter}”` };
+      }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    return { ok: true, heard: [], selection: [{ id: 'o_1', name: 'Leaf' }], say: 'Nothing was said.' };
+  };
   for (;;) {
     for (const port of ports) {
       const t = await tab(port, origin);
@@ -102,7 +131,20 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       if (!hello?.hello) { console.error(`port ${port}: ${hello?.message ?? 'refused'}`); t.close(); continue; }
       if (hello.pairingSecret) { credential.secret = hello.pairingSecret; }
       console.error(`attached on port ${port}`);
-      t.serve(TOOLS, (m) => { console.error(`<- ${m.command} ${JSON.stringify(m.args)}`); return answer(m); });
+      utterAt ??= Date.now() + utterAfter;
+      t.send({ tools: utter ? [...TOOLS, ...VOICE_TOOLS] : TOOLS });
+      (async () => {
+        for (;;) {
+          const m = await t.next(60_000);
+          if (!m || m.closed) return;
+          if (m.id == null || !m.command) continue;
+          console.error(`<- ${m.command} ${JSON.stringify(m.args).slice(0, 80)}`);
+          const r = m.command === 'voice.listen' ? await listenAnswer(m)
+            : m.command === 'voice.say' ? { ok: true, shown: m.args?.text, shownAs: 'tip', say: `Shown to the user: “${m.args?.text}”` }
+            : answer(m);
+          t.send({ ...r, id: m.id });
+        }
+      })();
       await new Promise((r) => { const iv = setInterval(() => { if (t.closed) { clearInterval(iv); r(); } }, 300); });
       console.error('bridge went away — polling again');
     }

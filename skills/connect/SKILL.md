@@ -17,9 +17,17 @@ Arguments: $ARGUMENTS
 3. Otherwise call `wait_for_connection`. A machine that has connected before
    needs nothing more. If it has not, ask: "Open the ⌁ Agent panel, switch on
    Enable Agent Connections, click Copy, and paste the line to me." 
-4. When it returns the design, tell the user what you can see and ask what they
-   want to do. Change nothing until they say.
-5. If it does not connect, read what the wait says the bridge saw. Refusals
+4. **Start `listen`, every time, as the result says.** When the connect result
+   gives a `listen` command, run it now as a background command under Monitor.
+   In Claude Code, Monitor may need loading first with ToolSearch,
+   `select:Monitor`. Leave it running. It prints nothing until the user presses
+   Talk and speaks, so an unused one costs nothing, and without it the Talk
+   button reaches no one. If the result says a `listen` is already running,
+   start nothing. Once it's running, send `voice.say`: "I'm listening. Press
+   Talk (⌥M) and speak."
+5. Tell the user what you can see and ask what they want to do. Change nothing
+   until they say.
+6. If it does not connect, read what the wait says the bridge saw. Refusals
    are reported there and in `connection_status`, because the user's panel
    shows them only as "Waiting to connect". Then follow `troubleshooting.md` in
    the design skill.

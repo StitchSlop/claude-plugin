@@ -14,8 +14,20 @@ the app's, and every answer is the app's.
 ## 1. Connect
 
 Call **`wait_for_connection`**. It opens the bridge, parks until the tab
-attaches, and comes back with a summary of the design. Greet the user with what
-you can see and ask what they want. Do not change anything until they ask.
+attaches, and comes back with a summary of the design.
+
+**Then start `listen`, every time you connect.** The connect result gives the
+exact command. Run it as a background command under **Monitor**; in Claude Code
+you may have to load Monitor first with ToolSearch, `select:Monitor`. The app
+has a **Talk** button (⌥M), and users press it without announcing it in chat.
+Without `listen` their words wait unheard until they type. It prints nothing
+until they speak, so leaving it running costs nothing. If the result says one is
+already running, start nothing. Once it's running, say in the app with
+`voice.say`: "I'm listening. Press Talk (⌥M) and speak." See *When the user
+talks to you*.
+
+Then greet the user with what you can see and ask what they want. Do not change
+anything until they ask.
 
 - The tab attaches **on its own** while the user's **Enable Agent Connections**
   switch is on (the **⌁ Agent** panel in the app). There is no Connect button,
@@ -110,30 +122,25 @@ result.
 
 ### When the user talks to you
 
-The app has a **Talk** button (⌥M). What the user says waits in the tab until
-something collects it with `voice.listen`, and an agent that has ended its turn
-collects nothing. So when the user wants to talk rather than type:
-
-1. **Start `listen` under Monitor** (or the host's equivalent for a watched
-   background command): `node "<the bridge script>" listen`. Each line it
-   prints wakes you.
-2. **Tell them in the app**, with `voice.say`: "I'm listening. Press Talk (⌥M)
-   and speak." Say it in chat too.
-
-Then:
+What the user says with the **Talk** button waits in the tab until something
+collects it, and an agent that has ended its turn collects nothing. `listen`,
+started when you connected, collects it for you: each line it prints wakes you.
+If it isn't running, start it with the command from the connect result, or
+`node "<the bridge script>" listen`.
 
 - **On a `{"heard": …}` line**, act on it. Read "that" or "this" as its
   `selection`. **Reply with `voice.say`**: the user is looking at the app, not
   at your chat. It shows up to 160 characters.
-- **On `{"event":"disconnected"}`**, say nothing in the app, which can't hear
-  you. Mention it in chat only if it lasts. `{"event":"connected"}` means it's
-  back, and nothing said meanwhile is lost.
+- **On `{"event":"disconnected"}` or `{"event":"connected"}`, say nothing,
+  in the app or in chat, and end your turn.** A tab that reloads or sleeps
+  drops and comes back by itself, and nothing said meanwhile is lost. If it is
+  still disconnected when the user next writes to you, tell them then.
 - **On `{"event":"unavailable"}`**, `listen` has stopped. Relay its message.
 - **While `listen` runs, never call `voice.listen` yourself.** Collecting
   consumes the tab's one queue, and two collectors split the user's words
   between them.
-- **Stop the monitored command** when the user is done talking, or before you
-  finish.
+- **Leave it running for the whole session.** Stop it only if the user asks,
+  or when you disconnect from the tab for good.
 - **No Monitor in this host?** Call `voice.listen` at the start of each turn
   instead, and tell the user their words are heard when you next check.
 
