@@ -1,118 +1,144 @@
-# Stitch Slop plugin
+# Stitch Slop for Claude Code
 
-Lets a user's agent work on the embroidery design open in their
-[Stitch Slop](https://www.stitchslop.com) browser tab: see it, describe it, and
-change it — every edit one undo step, every answer the app's own sentence.
+Lets Claude work on the embroidery design open in your
+[Stitch Slop](https://www.stitchslop.com) browser tab. It can look at it,
+describe it, change it, and hear you through the app's Talk button. Every change
+is one undo step in the app, and every answer is the app's own words.
 
-It is an alternative to the flow where the app asks an agent to *write* a bridge
-from the spec at `/agent`. With the plugin installed the bridge is already
-there, and the agent has a skill that tells it how to use the surface honestly.
+## What you need
 
-```
-.claude-plugin/plugin.json        the manifest
-.claude-plugin/marketplace.json   makes this repo its own marketplace
-.mcp.json                         starts the bridge as an MCP server, --lazy
-bridge/stitchslop-bridge.mjs      the transport. Zero dependencies, Node 18+
-skills/design/                    how to connect, and how to work on a design
-skills/connect/                   /stitchslop:connect [paste line]
-test/                             plugin-path tests and a stand-in tab
-```
+- **Claude Code**, and **Node.js 18 or newer** on your `PATH`.
+- **Stitch Slop open in a desktop browser on the same computer.** Chrome is
+  tested; Firefox connects the same way; Safari has not been tested.
+- **macOS or Linux.** Windows has not been tested yet.
 
 ## Install
+
+In Claude Code:
 
 ```
 /plugin marketplace add StitchSlop/claude-plugin
 /plugin install stitchslop@stitchslop
 ```
 
-The repo is private for now, so this works only for accounts with access to it
-(git must be able to clone it — `gh auth login` covers that).
+Then **start a new session**: a plugin's tools arrive with a session, not in the
+middle of one.
 
-or, from a checkout, `claude --plugin-dir /path/to/StitchSlop_plugin`. Needs
-`node` on the PATH. MCP servers start with a session, so the native tools arrive
-in the *next* session after installing; the skill covers the one in between
-through the bridge's shell face (`skills/design/shell-fallback.md`).
+## Connect
 
-## What the user does
+**The first time on a computer:**
 
-1. In the app: **⌁ Agent** → switch on **Enable Agent Connections**.
-2. First time on a machine only: click **Copy** and paste the line to their
-   agent, which passes its token to `pair`. After that the machine is paired,
-   and step 1 plus "connect to Stitch Slop" is the whole of it.
-3. Ask for things.
+1. In Stitch Slop, open the **⌁ Agent** panel and switch on **Enable Agent
+   Connections**.
+2. Click **Copy**, and paste the line into Claude Code.
 
-The panel shows one status word, and every refusal appears there as "Waiting
-to connect". The bridge keeps the reasons: `connection_status` reports
-`recentRefusals` and `connectionAttempts`, and a wait that times out leads with
-them.
+Chrome will ask once whether the page may "access other apps and services on
+this device". That is this connection, to a small bridge on your own computer:
+allow it. Firefox doesn't ask.
 
-## What is reused and what is replaced
+**After that**, the computer stays paired. With the switch on, just ask Claude
+to "connect to Stitch Slop".
 
-Per `docs/research/AGENT_SURFACE_HANDOFF.md` in the app repo, the **surface**
-(`commands.js`: the registry, the envelope, the Selector) is reused whole — it
-runs in the page, and this plugin never sees inside it. The tool list is the
-page's, sent live on connect; nothing here snapshots or re-describes a verb, so
-the plugin cannot drift from the app. The skill teaches the envelope and the
-invariants, and defers to the live tool descriptions for everything else.
+## Talk to it
 
-The **transport** is replaced. It implements wire protocol 1
-(`docs/research/BRIDGE_PROTOCOL.md`) and passes the app's conformance suite,
-41 of 41. What a plugin changes about the problem, and so what is different:
+In the ⌁ Agent menu, switch on **Talk to your agent by voice**. Then press
+**Talk** (⌥M) and speak. Claude hears you even between turns, and replies in the
+app, next to the Talk button. Voice needs Google Chrome on a computer.
+
+## What it can do
+
+About everything the app's commands cover:
+
+- look at the design, as a picture or as facts;
+- select, move, resize and align;
+- change stitch types and settings, threads and colours;
+- lettering and fonts, patches, sewing order and layering;
+- trace a background image into stitches;
+- check for stitch problems.
+
+The list comes from the app itself, so it grows as the app does.
+
+**Not yet:** exporting a machine file, saving, importing a design, and changing
+the fabric. Do those in the app.
+
+## Privacy
+
+The bridge talks only to your own browser tab, over your own computer's
+loopback. It sends nothing anywhere and has no telemetry. What Claude reads of
+your design — names, lettering, pictures of it, what you say to it — goes to
+Anthropic as part of your conversation, as anything you ask Claude about does.
+
+## Turning it off
+
+- **For now:** switch off **Enable Agent Connections**. Nothing connects while
+  it is off.
+- **For good, on this computer:** delete `~/.stitchslop/pairing.json`. The next
+  connection needs the pasted line again.
+- **The browser's half:** clear Stitch Slop's site data in the browser's
+  settings.
+- **The plugin:** `claude plugin uninstall stitchslop@stitchslop`, or through
+  `/plugin` in a session.
+
+## When it won't connect
+
+Ask Claude. It can see things the app deliberately does not show, such as why a
+connection was refused, and it knows what each of the panel's status words
+means. The details are in
+[`skills/design/troubleshooting.md`](skills/design/troubleshooting.md).
+
+## Security
+
+See [SECURITY.md](SECURITY.md): what the bridge can do on your computer, what
+limits it, and how to report a problem privately.
+
+---
+
+## Development
+
+```
+.claude-plugin/plugin.json        the manifest
+.claude-plugin/marketplace.json   makes this repo its own marketplace
+.mcp.json                         starts the bridge as an MCP server, --lazy
+bridge/stitchslop-bridge.mjs      the bridge. Zero dependencies, Node 18+
+skills/design/                    how to connect, and how to work on a design
+skills/connect/                   /stitchslop:connect [the pasted line]
+test/                             the plugin's tests, and a stand-in tab
+```
+
+From a checkout: `claude --plugin-dir /path/to/this/repo`.
+
+### How it fits together
+
+The app owns the design and its commands. The plugin never sees inside them.
+The tab sends its tool list when it connects, and the bridge carries calls to it
+and the app's answers back. Nothing here copies or re-describes a command, so
+the plugin cannot drift from the app. The skill teaches how to read the app's
+answers and the rules that bite, and defers to the live tool descriptions for
+everything else.
+
+The bridge implements Stitch Slop's wire protocol 1, published at
+[stitchslop.com/agent](https://www.stitchslop.com/agent). What a plugin changes
+about that problem:
 
 | | why |
 |---|---|
-| `--lazy`: nothing listens until the agent asks | A plugin's MCP server is spawned by *every* session. Binding at start would have each squat a port, and the tab — which dials 8787 first — would attach to whichever session started first, not the one the user is talking to. |
-| `pair` tool | The spec hands the one-time token to a bridge at launch; a plugin's server is launched before any token exists. It arrives as a tool argument — not argv (`ps`), not a config file. A lazy bridge therefore does not exit for lack of a credential (spec §1 says a bridge should; without `--lazy` this one does). |
-| Following | If a bridge for the same site is already running, this one drives it through its control plane (§4) rather than competing for the tab. If that bridge exits, this one binds and the tab's own poll finds it. `ownBridge: true` opts out, for two tabs. |
-| `POST /pair` on the control plane | An extension: how a follower hands its host a token. Same key, same Origin refusal. A host without it (the reference connector) is left alone and the follower opens the next port. |
-| Origin allow-list in `pair` | The paste line is untrusted text. Only production and loopback origins are accepted from it; anything else must be set by the user at launch (`STITCHSLOP_ORIGIN`). |
-| Busy is decided *before* the token is spent | A tab turned away as busy (§2.6) must still hold a credential it can use on the next port. |
-| `pairing.json` keeps the last 5 secrets | Pairing a second browser must not strand the first. `secret` stays the newest, so the reference connector reads the same file unchanged. |
-| Heartbeat ping every 30 s | Neither end pinged (§5), so a tab that slept looked attached and the user's next tab was refused as busy. |
-| 4 KB frame cap and a 10 s deadline before authentication | Any page can reach the port; nothing unauthenticated gets a buffer. |
-| The transport `id` is stripped from results | §3.5. |
+| `--lazy`: nothing listens until the agent asks | A plugin's MCP server starts with *every* session. Binding at start would have each claim a port, and the tab, which dials 8787 first, would attach to whichever session started first rather than the one you are talking to. |
+| The `pair` tool | The protocol hands a bridge its one-time token at launch, but a plugin's server starts before any token exists. So it arrives as a tool argument: not on the command line, where `ps` shows it, and not in a config file. |
+| Sharing | If a bridge for the same site is already running, a second session drives it through its control plane instead of competing for the tab. If that bridge exits, the next one takes its port, and the tab reattaches by itself. `ownBridge: true` opts out, for two tabs. |
+| Paired sites | A site this computer is paired with reconnects with no token, whichever site the bridge started on. The tab still has to present that site's own secret. |
+| Origin allow-list | Pasted text is untrusted. `pair` accepts only the production site and loopback addresses. Anything else must be set by the user, with `STITCHSLOP_ORIGIN`. |
+| Refusals are kept | The app shows a refused tab only as "Waiting to connect", so the bridge records why and `connection_status` reports it. |
+| The tab's tool list is checked | Names are validated, the bridge's own names can't be shadowed, and sizes are capped. Anything dropped is reported. |
+| `call_with_file`, `--file` | An image goes to the app by path, never as base64 typed by the model. Images only, checked by their bytes. |
+| `listen` | The Talk button's speech as lines a watching host (Claude Code's Monitor) wakes on. It starts when the agent connects. |
+| Heartbeat, frame caps, a pre-auth deadline | A tab that slept must not block the next one, and nothing unauthenticated gets a buffer. |
 
-`session.json` (the legacy, un-numbered file) is not written; only
-`session-<port>.json`.
-
-## Testing
+### Tests
 
 ```
-npm test                          # the plugin's own paths, on ports 8797-8798
-node test/fake-tab.mjs            # a stand-in tab, to develop without the app
+npm test                  # the plugin's own tests, on ports 8797-8798 with a temp config dir
+node test/fake-tab.mjs    # a stand-in tab: --token or --secret, --utter "…", --voice-on-after N
 ```
 
-The protocol is the app repo's to check:
-
-```
-node ../WebEmbroidery/scripts/conformance-bridge.mjs -- node bridge/stitchslop-bridge.mjs
-```
-
-That suite probes the real 8787–8790 range and skips if anything is listening
-there. To run it beside a live bridge, copy it, change its `PORTS` to a spare
-range, and append `--port <first>` to the command.
-
-End to end in a real client:
-
-```
-node test/fake-tab.mjs --ports 8797 --token tok_fake00000000 &
-claude --plugin-dir <a copy whose .mcp.json adds: --origin http://localhost:9999 --port 8797
-                     --config-dir <tmp>, and env STITCHSLOP_TOKEN=tok_fake00000000>
-```
-
-Claude Code exposes the app's dotted verbs with underscores —
-`mcp__plugin_stitchslop_app__scene_describe` — and picks up the late tool list
-through `notifications/tools/list_changed`.
-
-## Found on the app side while building this
-
-- `reference-connector.mjs` mints the pairing and spends the token **before**
-  the busy check, so a second tab refused as busy has burnt its token and never
-  receives the secret.
-- Its `toContent` leaves the transport `id` in the JSON shown to the model
-  (spec §3.5 says to remove it).
-- The connector's messages and `BRIDGE_PROTOCOL.md` call the switch "Allow
-  agent connections"; the UI label is "Enable Agent Connections".
-- The paste line tells every agent to write a bridge. One clause — "if you have
-  the Stitch Slop plugin, pass this token to its `pair` tool instead" — would
-  make the line right for both kinds of agent. The skill handles it meanwhile.
+Protocol conformance is checked by the Stitch Slop app's own suite, which is not
+public.
