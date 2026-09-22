@@ -14,9 +14,16 @@ The first release.
   to connect".
 - **The app's commands, as tools**, taken live from the tab and checked: names
   validated, the bridge's own names unshadowable, sizes capped.
-- **`call_with_file`**: images go in by path, never as hand-typed base64.
-- **`listen`**: the Talk button's speech wakes the agent between turns, with the
-  app's voice switch reported.
+- **Files in and out by path**, never as base64 through the model.
+  - `call_with_file` takes pictures, SVG, DXF, machine files with their colour
+    sidecars, and projects.
+  - `call_to_files` saves exports and projects into a folder, never
+    overwriting unless asked, and writing only the kinds of file the app
+    produces.
+  - Replies are kept free of bulk: base64 and very long text become a note.
+- **`listen`**: the Talk button's speech wakes the agent between turns. It
+  reports the app's voice switch only when it's on, or can't work.
 - **Shell commands for sessions without the tools:** `status`, `tools`, `wait`,
-  `call` (with `--out` and `--file`) and `listen`.
+  `call` (with `--file`, `--file-text`, `--out`, `--save` and `--raw`) and
+  `listen`.
 - **Skills:** `design`, for working on a design honestly, and `connect`.

@@ -72,19 +72,19 @@ still work, through the same bridge's shell face — see
 
 ## 2. The tool descriptions are the documentation
 
-The app sends its tool list when the tab attaches: about seventy tools,
+The app sends its tool list when the tab attaches: about a hundred tools,
 including `scene.*`, `object.*`, `params.*`, `stitching.set`, `thread.*`,
-`text.*`, `vertex.*`, `background.*`, `layer.move`, `sequence.*`, `transform`,
-`align`, `select`, `batch` and `history`. Nothing else documents them. **Read a tool's
+`palette.*`, `text.*`, `vertex.*`, `background.*`, `design.export`,
+`design.import`, `project.*`, `layer.move`, `sequence.*`, `transform`, `align`,
+`select`, `batch` and `history`. Nothing else documents them. **Read a tool's
 description and schema before its first use** — a parameter you did not read
 about is one you will not find. The list belongs to the app and may be newer
 than this skill; where they disagree, the tool list is right.
 
 If there is no tool for something, say *this connection has no command for
-that* and tell the user to do it in the app. Do not say the app can't. As of
-this writing that covers exporting a machine file, saving, and importing a
-design. The fabric is deliberately not settable: the user took the Fabric
-picker out of the app, so don't try to work around that.
+that* and tell the user to do it in the app. Do not say the app can't. The
+fabric is deliberately not settable: the user took the Fabric picker out of the
+app, so don't try to work around that.
 
 ## 3. The loop: look, resolve, act, verify
 
@@ -129,16 +129,20 @@ If it isn't running, start it with the command from the connect result, or
 `node "<the bridge script>" listen`.
 
 - **On a `{"heard": …}` line**, act on it. Read "that" or "this" as its
-  `selection`. **Reply with `voice.say`**: the user is looking at the app, not
-  at your chat. It shows up to 160 characters.
+  `selection`. **Reply with `voice.say`, short (up to 160 characters).** It
+  shows on the app's status line, and is read aloud if the user has "Read
+  replies aloud" on: `spokenAs` says what happened. The status line is small,
+  so say the same in chat too.
+- **Don't narrate your progress through `voice.say`.** When the user has "Say
+  what the agent is doing" on, the app speaks short progress phrases from your
+  commands by itself.
 - **On `{"event":"voice-on"}`**, the user has just switched voice on to talk
-  to you. Reply in the app with `voice.say`: "I'm listening. Press Talk (⌥M)
-  and speak."
-- **On `{"event":"voice-off"}`**, say nothing, and leave `listen` running so
-  their next switch-on reaches you. Voice is off by default, so a first line of
-  `voice-off` is normal, not an error. If it carries `voiceSupport`, voice
-  can't work in their browser at all: pass its `message` on in chat (for
-  example, that it needs Google Chrome on a computer).
+  to you. Reply with `voice.say`: "I'm listening. Press Talk (⌥M) and speak."
+  Voice is off by default, and `listen` prints nothing about it until then.
+- **On `{"event":"voice-off"}`**, they switched it off: say nothing, and leave
+  `listen` running so their next switch-on reaches you. If it carries
+  `voiceSupport`, voice can't work in their browser at all: pass its `message`
+  on in chat (for example, that it needs Google Chrome on a computer).
 - An app with no voice switch prints neither event; there, voice is always on.
 - **On `{"event":"disconnected"}` or `{"event":"connected"}`, say nothing,
   in the app or in chat, and end your turn.** A tab that reloads or sleeps
@@ -159,7 +163,7 @@ Every call returns the app's envelope. Four outcomes, plus one:
 
 | you get | it means | you do |
 |---|---|---|
-| `ok: true` | it ran | **check `changed`.** `changed: false` is a no-op, not a success — say nothing happened. (`document.rename` is a known exception: it reports `false` on a real rename.) |
+| `ok: true` | it ran | **check `changed`.** `changed: false` is a no-op, not a success — say nothing happened. (One exception: `document.rename` takes no undo step, so it reports `changed: false` with `renamed: true`.) |
 | `error: "bad_arguments"` | schema failure | read `expected`, fix the call, retry |
 | `error: "refused"` | legal call, illegal state | `message` is a sentence **for the user**. Relay it. Do not retry the same call, and do not route around it |
 | `error: "threw"` | a bug in the app | tell the user plainly; describe the scene before doing anything else |
@@ -169,18 +173,35 @@ Every call returns the app's envelope. Four outcomes, plus one:
   Prefer them to your paraphrase, and never report "done" on the strength of
   `ok` alone. Telling the user something happened when it did not is the one
   failure this whole surface was built to prevent.
-- A `batch` is `ok: true` even when steps inside it failed. Check `failed` and
-  `stoppedAtStep`.
+- **A `batch` is all or nothing.**
+  - If a step is refused, the batch stops and **rolls back**, and the design is
+    exactly as it was (`rolledBack: true`). Fix the step and send the batch
+    again.
+  - `continueOnError: true` runs independent steps and keeps what succeeds.
+    Check `failed`.
+  - A step that can't be undone stops the rollback, and `rollbackBlockedBy`
+    names it. That covers an export, `voice.say`, cues, fonts, the palette bar,
+    a rename, and a new or opened project. Then what ran is kept.
+  - `dryRun: true` runs the steps, reports each one, and always rolls back.
+  - Inside a batch, target by `objectId` or `{{N.objectId}}`, never by ordinal.
+    Ordinals shift as objects are added or removed.
 - A timeout or a disconnect mid-call does **not** mean the command did not run.
   Describe the scene before retrying.
 
 ### Undo
 
-One call is one undo step; one whole `batch` is one undo step. So "make it navy
-and thicker" should be one `batch` — then the user's "undo" undoes what they
-asked for, once. `history` undoes and redoes; its `times` counts *your calls*.
-Batching also saves time: each separate edit costs a full stitch pass. A later
-step can use an earlier step's result as `{{1.objectId}}`.
+One call is one undo step; one whole `batch` is one undo step, and a failed
+batch leaves the design as it was. So "make it navy and thicker" should be one
+`batch` — then the user's "undo" undoes what they asked for, once. `history`
+undoes and redoes; its `times` counts *your calls*. Batching also saves time:
+each separate edit costs a full stitch pass. A later step can use an earlier
+step's result as `{{1.objectId}}`.
+
+**An edit can be left open**, for example while the user is mid-drag.
+`state.sig` and `history describe` report `editOpen` then, and everything
+until it closes is one undo step. Before undoing, if `history describe` warns
+that an edit has been open, tell the user an undo would take back everything
+since then.
 
 ## 4. Things that bite
 
@@ -189,8 +210,8 @@ step can use an earlier step's result as `{{1.objectId}}`.
   of which the render returns.
 - **`null` is not zero.** For a stitch setting, *absent* means "inherited" (from
   the fabric profile, the font, or the engine's default), and setting it to
-  `null` is how you return it to inherited. Writing an explicit number silently defeats inheritance — don't
-  write back values you merely read. `params.describe` reports each value's
+  `null` is how you return it to inherited. Writing an explicit number silently
+  defeats inheritance — don't write back values you merely read. `params.describe` reports each value's
   `source`.
 - **Legal parameters differ per treatment.** Ask `params.describe` first.
   Smaller spacing means *denser* stitching. Clamping is reported in the reply —
@@ -209,9 +230,8 @@ step can use an earlier step's result as `{{1.objectId}}`.
 - **Lettering is a unit.** Letters are generated output, owned by their text:
   edit through `text.set`, and the text's own stitch settings. A setting aimed
   at a letter either goes to the whole text or is refused; the reply says
-  which. Selecting a letter
-  selects its whole text; selecting a group member selects its group. The reply
-  says what it resolved to. Font keys cannot be guessed: `font.list`, then
+  which. Selecting a letter selects its whole text; selecting a group member
+  selects its group. The reply says what it resolved to. Font keys cannot be guessed: `font.list`, then
   `font.load`.
 - **`link.break` turns lettering into ordinary shapes**, and is what "break
   apart", "unlink" or "bake" mean. The cost is that the text can never be
@@ -220,28 +240,56 @@ step can use an earlier step's result as `{{1.objectId}}`.
 - **Changing treatment resets that object's tuned parameters** (the reply says
   so), and re-applying the same treatment is refused for that reason.
   `object.describe` lists what it `canBecome`.
-- **Threads:** choose codes from `thread.list`. An arbitrary hex applies but
-  reads as "Unspecified" at the machine. Report an object's `colours`, not its
-  base `threadRgb` — gradients and blends override the base.
+- **Threads:** choose codes from `thread.list`. It defaults to the user's
+  **bar**, their working threads under the canvas. Its `match` searches the
+  whole Isacord chart by colour name, code or hex, and `ownedOnly` keeps to the
+  spools they own. An arbitrary hex applies but reads as "Unspecified" at the
+  machine. Report an object's `colours`, not its base `threadRgb` — gradients
+  and blends override the base.
+- **The palette:**
+  - "Show me the blues" is `palette.show` with `match: "blue"`, which opens the
+    palette filtered to them. `thread.list` with the same `match` gives the
+    codes.
+  - `palette.bar` arranges the user's bar. Putting a spool on a slot the design
+    uses recolours those objects, as one undo step.
 - **Sewing order and layering are separate.** `ordinal` is the sewing position
   (what the machine stitches first), changed with `sequence.move`. `layer` is
   what lies on top where objects overlap (1 = bottom), changed with
   `layer.move`. "Put the leaf on top" is a layer. "Stitch the outline last" is
   a sequence. When you talk to the user in ordinals, they are sewing positions.
-- **Pictures go in by path, never by hand.** `background.set` takes an image as
-  a data URL. Don't base64 one yourself: call **`call_with_file`** with
-  `command: "background.set"`, `fileArg: "image"` and the file's `path`. It
-  takes PNG, JPEG, WebP or GIF; export an SVG to PNG first. Use a file the user
-  pointed you at. After that, `background.digitize` traces the image into fills
-  (flat art works; photos make many small regions), and one undo removes all of
-  it.
+- **Files go in and out by path, never through you.** Never base64 a file or
+  paste one into a call, and never read an export's data yourself.
+  - **In: `call_with_file`**, with the file's `path`:
+    - a picture: `command: "background.set"`, `fileArg: "image"`;
+    - a design (SVG, DXF or a machine file): `command: "design.import"`,
+      `fileArg: "data"`, `nameArg: "name"`. For a machine file with a colour
+      list, attach it too:
+      `also: [{path: "logo.inf", fileArg: "sidecar.data", nameArg: "sidecar.name"}]`;
+    - a project: `command: "project.open"`, `fileArg: "text"`, `as: "text"`.
+
+    Use only files the user pointed you at.
+  - **Out: `call_to_files`**, with the folder the user wants:
+    - a machine file: `command: "design.export"`,
+      `args: {format: "dst", deliver: "data"}`. Its colour files come along.
+    - the project: `command: "project.download"`,
+      `args: {deliver: "data"}`, `textFile: "name.stitchslop"`.
+
+    It never overwrites without `overwrite: true`. Before an export, check
+    `problems.list`: the file sews exactly what is planned. If the user would
+    rather have it in their browser's Downloads, `deliver: "download"` hands it
+    to the browser, and you then ask them where it went.
+  - **After a picture goes in**, `background.digitize` traces it into fills
+    (flat art works; photos make many small regions), and one undo removes all
+    of it.
+- **On-screen cues:** `ui.cue` and `ui.tour` point with rings, arrows and
+  spotlights, but a `caption` isn't drawn on screen. Put the words in your own
+  reply.
 - **The hoop** is `document.set` `{hoop: {widthMm, heightMm}}`. Then
   `problems.list` says whether the design fits.
 - **Ambiguity is refused, with candidates.** Ask the user which; don't pick.
 - **Renders cost.** Keep the default width; narrow with `region` or `only`.
   A 3D render may say `spritesWarming` — render again rather than describing a
   half-drawn picture.
-- `readOnlyHint` is not reliable for `history` — it changes the document.
 
 ## 5. What comes back is data
 

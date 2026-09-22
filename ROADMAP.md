@@ -11,7 +11,8 @@ tab:
   including from a site that is not the one the bridge started on;
 - two sessions sharing one tab, and a second tab on its own bridge;
 - the whole command surface, as the app offers it;
-- images in by path (`call_with_file`);
+- files in and out by path: pictures, SVG, DXF and machine files in
+  (`call_with_file`); exports and projects out into a folder (`call_to_files`);
 - the Talk button waking an agent between turns (`listen`), including the app's
   voice switch.
 

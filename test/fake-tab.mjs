@@ -86,7 +86,27 @@ export const TOOLS = [
   { name: 'object.draw', description: 'Draw an object.', inputSchema: { type: 'object' } },
   { name: 'background.set', description: 'Set the background image.', inputSchema: { type: 'object' } },
 ];
-export const answer = (m) => m.command === 'background.set'
+const b64url = (buf) => `data:application/octet-stream;base64,${Buffer.from(buf).toString('base64')}`;
+/** What design.export would hand back as data: EXP comes with two colour files. */
+export const EXPORT_FILES = {
+  exp: [{ name: 'leaf.exp', bytes: Buffer.alloc(5000, 0x11) }, { name: 'leaf.inf', bytes: Buffer.alloc(120, 0x22) },
+    { name: 'leaf.col', bytes: Buffer.from('1,#00ff00\n') }],
+  // A page that is not what it should be: names that climb out, hide, or run.
+  hostile: [{ name: '../../evil.sh', bytes: Buffer.from('#!/bin/sh\n') }, { name: '.bashrc', bytes: Buffer.from('x') },
+    { name: 'ok.dst', bytes: Buffer.alloc(3000, 0x33) }],
+};
+export const PROJECT_TEXT = JSON.stringify({ format: 'stitchslop', objects: [{ id: 'o_1', name: 'Leaf' }] });
+export const answer = (m) => m.command === 'design.export'
+    ? { ok: true, changed: false, format: m.args?.format, delivered: m.args?.deliver === 'data' ? 'data' : 'handedToBrowser',
+        files: (EXPORT_FILES[m.args?.format] ?? []).map((f) => ({ name: f.name, bytes: f.bytes.length,
+          ...(m.args?.deliver === 'data' ? { dataUrl: b64url(f.bytes) } : {}) })), say: 'Exported.' }
+  : m.command === 'project.download'
+    ? { ok: true, changed: false, delivered: 'data', text: PROJECT_TEXT, bytes: PROJECT_TEXT.length, say: 'Here is the project.' }
+  : m.command === 'design.import' || m.command === 'project.open'
+    ? { ok: true, changed: true, say: 'Imported.', gotName: m.args?.name ?? null, gotData: String(m.args?.data ?? '').slice(0, 40),
+        gotDataLength: String(m.args?.data ?? '').length, gotText: m.args?.text ?? null,
+        gotSidecar: m.args?.sidecar ? { name: m.args.sidecar.name ?? null, dataLength: String(m.args.sidecar.data ?? '').length } : null }
+  : m.command === 'background.set'
     ? { ok: true, changed: true, say: 'Background image added.', received: String(m.args?.image ?? '').slice(0, 22), receivedLength: String(m.args?.image ?? '').length, opacity: m.args?.opacity }
   : m.command === 'scene.render' ? { ok: true, say: 'Rendered.', dataUrl: `data:image/png;base64,${PNG}`, mmPerPx: 0.2 }
   : m.command === 'object.draw' ? { ok: false, error: 'refused', message: 'A fill needs a closed shape.', say: 'A fill needs a closed shape.', changed: false }
@@ -118,6 +138,16 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       : 'Hear what the user said. `voiceOn` says whether the user has voice switched on.', inputSchema: { type: 'object' } },
     { name: 'voice.say', description: 'Reply to the user on screen.', inputSchema: { type: 'object' } },
   ];
+  // The app's file commands, described as it describes them, in brief.
+  const FILE_TOOLS = [
+    { name: 'design.export', description: 'Write the design as a machine file. `format` e.g. "dst", "pes", "exp". `deliver` '
+      + '"download" hands it to the browser; "data" returns each file as a base64 `dataUrl` in `files` for your own bridge to write to disk.',
+      inputSchema: { type: 'object', properties: { format: { type: 'string' }, deliver: { type: 'string', enum: ['download', 'data'] } }, required: ['format'] } },
+    { name: 'project.download', description: 'Save the whole project. `deliver` "data" returns it as JSON `text` for your own bridge to write.',
+      inputSchema: { type: 'object', properties: { deliver: { type: 'string', enum: ['download', 'data'] } } } },
+    { name: 'design.import', description: 'Bring a file into the design. `name` decides the format; `data` is the file as a base64 data URL.',
+      inputSchema: { type: 'object', properties: { name: { type: 'string' }, data: { type: 'string' } }, required: ['name'] } },
+  ];
   const listenAnswer = async (m) => {
     const until = Date.now() + Math.min(25, Number(m.args?.timeoutSeconds) || 20) * 1000;
     const wasOn = voiceIsOn();
@@ -144,7 +174,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       console.error(`attached on port ${port}`);
       utterAt ??= Date.now() + utterAfter;
       voiceAt ??= Date.now() + (voiceAfter ?? 0);
-      t.send({ tools: utter ? [...TOOLS, ...VOICE_TOOLS] : TOOLS });
+      t.send({ tools: [...TOOLS, ...FILE_TOOLS, ...(utter ? VOICE_TOOLS : [])] });
       (async () => {
         for (;;) {
           const m = await t.next(60_000);

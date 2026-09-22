@@ -22,9 +22,15 @@ has no dependencies and makes no internet connections. It:
     local control plane.
 - **Carries calls between your agent and your Stitch Slop tab.** The tab owns
   the design and the commands. Every change is one undo step in the app.
-- **Reads an image when your agent asks it to** (`call_with_file`, `--file`),
-  and sends it to your tab. Images only (PNG, JPEG, WebP, GIF), recognised by
-  their contents, not their names, and up to 14 MB.
+- **Reads a file when your agent asks it to** (`call_with_file`, `--file`),
+  and sends it to your tab. Only images (PNG, JPEG, WebP or GIF, recognised by
+  their contents) and the design files the app reads (SVG, DXF, machine
+  formats such as DST and PES, their colour files, and `.stitchslop`
+  projects), up to 14 MB. Hidden files and anything else are refused.
+- **Writes a file when your agent asks it to** (`call_to_files`, `--save`): an
+  export or project the app returns, into the folder your agent names. It writes
+  only the kinds of file the app produces, under the file's bare name (never a
+  path, never a hidden file), and never overwrites unless told to.
 - **Runs `listen`** as a background process while an agent is connected. It
   asks the tab for what you said with the Talk button and prints it for your
   agent. Voice is off in the app until you switch it on.
@@ -73,9 +79,10 @@ instruction.
   as it is for SSH keys.
 - **Windows.** The control plane's key relies on Unix file modes, which Windows
   does not enforce the same way. Windows is untested and not yet supported.
-- **Images you point it at.** `call_with_file` sends the image your agent names.
-  It won't send a non-image, but it will send any image your agent chooses, so
-  your agent's permission prompt for it matters.
+- **Files you point it at.** `call_with_file` sends the image or design file
+  your agent names. It won't send other kinds of file, but it will send any
+  image or design file your agent chooses. `call_to_files` writes into any folder
+  your agent chooses. So your agent's permission prompts for both matter.
 
 ## Revoking access
 

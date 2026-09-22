@@ -17,7 +17,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { tab as dial, TOOLS, answer, PNG } from './fake-tab.mjs';
+import { tab as dial, TOOLS, answer, PNG, EXPORT_FILES, PROJECT_TEXT } from './fake-tab.mjs';
 
 const BRIDGE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bridge', 'stitchslop-bridge.mjs');
 const CFG = fs.mkdtempSync(path.join(os.tmpdir(), 'stitchslop-plugin-'));
@@ -104,7 +104,7 @@ await a.init();
 await wait(400);
 ok('a lazy bridge with no credential stays alive', a.proc.exitCode === null);
 ok('  ...and listens on nothing until asked', !(await portOpen(8797)) && !(await portOpen(8798)));
-ok('  ...offering only its own tools', (await a.tools()).join() === 'wait_for_connection,pair,connection_status,call_with_file');
+ok('  ...offering only its own tools', (await a.tools()).join() === 'wait_for_connection,pair,connection_status,call_with_file,call_to_files');
 const st0 = JSON.parse(textOf(await a.call('connection_status')));
 ok('connection_status opens nothing', st0.mode === 'idle' && !(await portOpen(8797)), st0.mode);
 
@@ -154,12 +154,12 @@ const attachedText = textOf(attached);
 ok('an image reaches the tab as a data URL under the named argument',
   attached?.result?.isError === false && /"received": "data:image\/png;base64,"/.test(attachedText), attachedText.slice(0, 90));
 ok('  ...alongside the other arguments', /"opacity": 0\.5/.test(attachedText));
-ok('  ...and the result says what was attached', /attached .*logo\.png, image\/png/.test(attachedText));
+ok('  ...and the result says what was attached', /attached .*logo\.png \(image\/png/.test(attachedText));
 const notImage = path.join(CFG, 'notes.png');
 fs.writeFileSync(notImage, 'secret notes, named like a picture');
 const refusedFile = await a.call('call_with_file', { command: 'background.set', fileArg: 'image', path: notImage });
 ok('a file that is not an image is refused by its bytes, whatever its name',
-  refusedFile?.result?.isError === true && /not a PNG, JPEG, WebP or GIF/.test(textOf(refusedFile)));
+  refusedFile?.result?.isError === true && /neither an image/.test(textOf(refusedFile)));
 ok('  ...and nothing is sent to the tab', !/secret notes/.test(textOf(refusedFile)) && !/received/.test(textOf(refusedFile)));
 ok('call_with_file will not dress up the bridge\'s own tools',
   (await a.call('call_with_file', { command: 'pair', fileArg: 'token', path: pngFile }))?.result?.isError === true);
@@ -208,7 +208,8 @@ ok('--file KEY=PATH attaches an image to the call', c3.status === 0 && env3.rece
 ok('  ...and refuses a non-image with a usage error, sending nothing', (await cli('call', 'background.set', '--file', `image=${notImage}`)).status === 64);
 // A pipe holds 64KB and Node writes into one asynchronously, so exiting right
 // after the write cut the reply at 65,536 bytes; `cli` reads through a pipe.
-const bigReply = await cli('call', 'scene.describe', '{"big":true}');
+// --raw: this checks the pipe, so the bulk guard must not shorten the reply.
+const bigReply = await cli('call', 'scene.describe', '{"big":true}', '--raw');
 let bigLen = null; try { bigLen = JSON.parse(bigReply.stdout).filler?.length ?? null; } catch {}
 ok('a reply over 64KB arrives whole through a pipe', bigReply.status === 0 && bigLen === 200_000,
   `${bigReply.stdout.length} bytes, filler ${bigLen}`);
@@ -485,18 +486,37 @@ const vExit = new Promise((r) => vl.on('close', (code) => r(code)));
 let vOut = '';
 vl.stdout.on('data', (c) => { vOut += c; });
 vl.stderr.on('data', () => {});
-for (let i = 0; i < 120 && vOut.split('\n').filter(Boolean).length < 4; i++) await wait(100);
+for (let i = 0; i < 120 && vOut.split('\n').filter(Boolean).length < 3; i++) await wait(100);
 await wait(2500);                                  // a repeat 'off' must print nothing
 vl.kill('SIGTERM');
 await vExit;
-ok('listen reports the voice switch: off at first, on, what was said, off with the reason',
+ok('listen reports the voice switch: nothing while off at first, then on, what was said, off with the reason',
   vOut === [
-    { event: 'voice-off' },
     { event: 'voice-on' },
     { heard: 'make it red', atMs: 1790000000004, selection: SEL },
     { event: 'voice-off', voiceSupport: 'browser', message: 'Voice cannot work in this browser: it needs Google Chrome on a computer.' },
   ].map((o) => JSON.stringify(o) + '\n').join(''), vOut.replace(/\n/g, ' | ').slice(0, 260));
 t10.t.close();
+
+// A first reply that says voice CAN'T work here is worth one line: the agent can
+// tell the user it needs Chrome. A plain initial off is not.
+for (let i = 0; i < 40 && JSON.parse(textOf(await d.call('connection_status'))).connected; i++) await wait(100);
+const t10b = await scriptedTab([{ ok: true, heard: [], voiceOn: false, voiceSupport: 'app', selection: SEL,
+  say: 'Voice is not available in the app yet: it works in Google Chrome on a computer.' }, async () => { await wait(1500); return off; }],
+  { voiceSwitch: true });
+const nb = spawn('node', vArgs);
+const nbExit = new Promise((r) => nb.on('close', (code) => r(code)));
+let nbOut = '';
+nb.stdout.on('data', (c) => { nbOut += c; });
+nb.stderr.on('data', () => {});
+for (let i = 0; i < 60 && !nbOut; i++) await wait(100);
+await wait(2000);
+nb.kill('SIGTERM');
+await nbExit;
+ok('  ...but a first reply saying voice cannot work here is one line, with the app\'s sentence',
+  nbOut === JSON.stringify({ event: 'voice-off', voiceSupport: 'app', message: 'Voice is not available in the app yet: it works in Google Chrome on a computer.' }) + '\n',
+  nbOut.slice(0, 160));
+t10b.t.close();
 
 const noBridge = await cli('listen', '--port', '8799');
 ok('no bridge at start: exit 3, and nothing on stdout', noBridge.status === 3 && noBridge.stdout === '');
@@ -535,6 +555,67 @@ ok('  ...and an oversized description is cut to the limit, not passed on whole',
 const pairStill = await d.call('pair', { token: 'tok_cccccccccccc', origin: ORIGIN, timeoutSeconds: 5 });
 ok('calling pair still reaches the bridge\'s own tool', /already connected|stored pairing|token is armed/i.test(textOf(pairStill)), textOf(pairStill).slice(0, 200));
 t11.close?.();
+
+/* ======================= files out, files in ============================ */
+// design.export and project.download hand back the file itself. Through the
+// bridge unchanged, a machine file reached the model as a wall of base64.
+console.log('\nfiles out and in');
+for (let i = 0; i < 40 && JSON.parse(textOf(await d.call('connection_status'))).connected; i++) await wait(100);
+const t12 = await tab(8797);
+t12.send({ secret: hello.pairingSecret });
+await t12.next();
+t12.serve(TOOLS, answer);
+await wait(300);
+const outDir = path.join(CFG, 'exports');
+const ls = (dir) => (fs.existsSync(dir) ? fs.readdirSync(dir).sort().join() : '(no folder)');
+const exp = await d.call('call_to_files', { command: 'design.export', args: { format: 'exp', deliver: 'data' }, dir: outDir });
+const expText = textOf(exp);
+ok('call_to_files writes every file an export returns, under the app\'s names',
+  EXPORT_FILES.exp.every((f) => fs.existsSync(path.join(outDir, f.name)) && fs.readFileSync(path.join(outDir, f.name)).equals(f.bytes)),
+  expText.slice(0, 120));
+ok('  ...and hands back where they went, with no base64 in the reply',
+  exp?.result?.isError === false && /savedTo/.test(expText) && !/base64/.test(expText));
+const again = await d.call('call_to_files', { command: 'design.export', args: { format: 'exp', deliver: 'data' }, dir: outDir });
+ok('it never overwrites a file unless asked', again?.result?.isError === true && /already exists/.test(textOf(again)));
+const forced = await d.call('call_to_files', { command: 'design.export', args: { format: 'exp', deliver: 'data' }, dir: outDir, overwrite: true });
+ok('  ...and does when asked', forced?.result?.isError === false && /Saved 3 files/.test(textOf(forced)));
+const hostileDir = path.join(CFG, 'hostile');
+const hostile = await d.call('call_to_files', { command: 'design.export', args: { format: 'hostile', deliver: 'data' }, dir: hostileDir });
+ok('names from the page cannot climb out of the folder, hide, or be a script',
+  ls(hostileDir) === 'ok.dst' && !fs.existsSync(path.join(CFG, 'evil.sh')) && !fs.existsSync(path.join(CFG, '..', 'evil.sh'))
+  && /evil\.sh" is not a kind of file/.test(textOf(hostile)) && /"\.bashrc" is not a usable file name/.test(textOf(hostile)),
+  ls(hostileDir) + ' | ' + textOf(hostile).slice(0, 160));
+const proj = await d.call('call_to_files', { command: 'project.download', args: { deliver: 'data' }, dir: outDir, textFile: 'leaf.stitchslop' });
+ok('a project\'s text is saved as the file it is', fs.readFileSync(path.join(outDir, 'leaf.stitchslop'), 'utf8') === PROJECT_TEXT
+  && /textSavedTo/.test(textOf(proj)) && !textOf(proj).includes('"objects":[{'));
+const direct = textOf(await d.call('design.export', { format: 'exp', deliver: 'data' }));
+ok('called directly, an export\'s base64 is kept out of the model\'s context', /left out of this reply: call_to_files saves it/.test(direct)
+  && !/[A-Za-z0-9+/]{2000}/.test(direct), direct.slice(0, 120));
+
+const dstFile = path.join(CFG, 'logo.dst'); fs.writeFileSync(dstFile, Buffer.alloc(4000, 0x44));
+const infFile = path.join(CFG, 'logo.inf'); fs.writeFileSync(infFile, Buffer.alloc(64, 0x55));
+const imp = textOf(await d.call('call_with_file', { command: 'design.import', args: {}, path: dstFile, fileArg: 'data', nameArg: 'name',
+  also: [{ path: infFile, fileArg: 'sidecar.data', nameArg: 'sidecar.name' }] }));
+ok('a machine file goes in by path, named, with its colour sidecar',
+  /"gotName": "logo\.dst"/.test(imp) && /"gotData": "data:application\/octet-stream;base64,/.test(imp)
+  && /"name": "logo\.inf"/.test(imp) && /"dataLength": \d{3}/.test(imp), imp.slice(0, 200));
+const projFile = path.join(CFG, 'saved.stitchslop'); fs.writeFileSync(projFile, PROJECT_TEXT);
+const opened = textOf(await d.call('call_with_file', { command: 'project.open', args: {}, path: projFile, fileArg: 'text', as: 'text' }));
+ok('  ...and a project as text', opened.includes(JSON.stringify(PROJECT_TEXT)), opened.slice(0, 160));
+const script = path.join(CFG, 'run.sh'); fs.writeFileSync(script, '#!/bin/sh\necho hi\n');
+const refusedSh = await d.call('call_with_file', { command: 'design.import', args: { name: 'run.sh' }, path: script, fileArg: 'data' });
+ok('  ...but a file that is neither an image nor a design file is refused, and nothing is sent',
+  refusedSh?.result?.isError === true && /neither an image/.test(textOf(refusedSh)) && !/Imported/.test(textOf(refusedSh)));
+
+const cliDir = path.join(CFG, 'cli-out');
+const cliSave = await cli('call', 'design.export', '{"format":"exp","deliver":"data"}', '--port', '8797', '--save', cliDir);
+const cliEnv = JSON.parse(cliSave.stdout || '{}');
+ok('the shell: --save writes them too', cliSave.status === 0 && ls(cliDir) === 'leaf.col,leaf.exp,leaf.inf'
+  && cliEnv.files?.every((f) => f.savedTo && !f.dataUrl), cliSave.stdout.slice(0, 120));
+const cliPlain = await cli('call', 'design.export', '{"format":"exp","deliver":"data"}', '--port', '8797');
+ok('  ...and without it, prints a note instead of the base64', /left out of this reply/.test(cliPlain.stdout)
+  && !/[A-Za-z0-9+/]{2000}/.test(cliPlain.stdout));
+t12.close?.();
 
 ok('stdout stayed pure JSON-RPC in every bridge',
   [a, b, c, d, e, f, g].reduce((n, m) => n + m.junk.length, 0) === 0);

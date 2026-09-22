@@ -11,7 +11,11 @@
  *   node stitchslop-bridge.mjs --lazy                 as a plugin MCP server
  *   node stitchslop-bridge.mjs --origin <ORIGIN>      run by hand (token in STITCHSLOP_TOKEN)
  *   node stitchslop-bridge.mjs status | tools | wait [SECONDS]
- *   node stitchslop-bridge.mjs call <COMMAND> [JSON-ARGS] [--out FILE] [--port N]
+ *   node stitchslop-bridge.mjs call <COMMAND> [JSON-ARGS] [--port N]
+ *        [--file KEY=PATH | --file-text KEY=PATH]   a local file into an argument
+ *        [--out FILE]                               a picture it returns, to FILE
+ *        [--save DIR [--text-file NAME] [--overwrite]]  every file it returns, into DIR
+ *        [--raw]                                    print bulk (base64) instead of a note
  *   node stitchslop-bridge.mjs listen [--port N]      the user's speech, one line each
  *
  * Contract: docs/research/BRIDGE_PROTOCOL.md in the app's repo, checked by its
@@ -58,7 +62,8 @@ let LISTENER_ID = null;
 /* ------------------------------------------------------------ arguments --- */
 // Flags that take a value are listed, not guessed: guessing from "the next word
 // does not start with --" lets `--version call …` swallow the subcommand.
-const VALUE_FLAGS = new Set(['--origin', '--port', '--config-dir', '--token', '--idle-minutes', '--out', '--file']);
+const VALUE_FLAGS = new Set(['--origin', '--port', '--config-dir', '--token', '--idle-minutes', '--out', '--file',
+  '--file-text', '--save', '--text-file']);
 const flags = {};
 const words = [];
 for (let i = 2; i < process.argv.length; i++) {
@@ -208,36 +213,157 @@ const parseDataUrl = (s) => {
 };
 
 /**
- * A local image as a data URL, for an app command that takes one
- * (background.set's `image`, today). The agent cannot reasonably type a
- * picture into a tool call — it is hundreds of thousands of tokens, and over
- * ARG_MAX on the shell path — so the bridge reads it instead.
+ * FILES IN AND OUT, so a design never travels through the model as base64.
  *
- * IMAGES ONLY, decided by the file's bytes rather than its name: this sends a
- * file's contents to the tab, and restricting it to the four types the app
- * accepts is what keeps it from being a way to ship an arbitrary local file
- * anywhere. Returns { dataUrl, mimeType, bytes } or { error }.
+ * In: the app takes a picture (background.set), a design file (design.import)
+ * or a project (project.open) as a data URL or as text. Typed by the model that
+ * is hundreds of thousands of tokens, and over ARG_MAX on the shell path, so
+ * the bridge reads the file instead.
+ *
+ * Out: design.export and project.download hand back the file itself — base64
+ * `files[].dataUrl`, or the project as `text`. Passed through, a machine file
+ * lands in the model's context as a wall of base64. The bridge writes it to a
+ * folder the agent names, and keeps it out of the context when it doesn't.
+ *
+ * BOTH DIRECTIONS ARE RESTRICTED TO WHAT THE APP ACTUALLY HANDLES. In: images,
+ * recognised by their bytes, and design files by extension. Out: the same
+ * extensions. This is what stops "attach a file" from shipping any file on the
+ * machine to the tab, and "save a file" from writing, say, a shell script. The
+ * design list is the app's own format list (packages/format, 2026-09-22), plus
+ * SVG, DXF, colour sidecars and projects.
  */
 const FILE_MAX_BYTES = 14 * 1024 * 1024;   // ~19MB once base64'd; the app refuses past 20MB encoded
-function imageDataUrl(file) {
+const MACHINE_EXTS = ['dst', 'pes', 'pec', 'exp', 'jef', 'vp3', 'sew', 'xxx', 'emd', 'jpx', 'shv', 'pcs', 'pcd',
+  'pcq', 'pcm', 'tap', 'tbf', 'u01', 'dsz', 'z00', 'csd', 'vip', 'hus'];
+const DESIGN_EXTS = new Set([...MACHINE_EXTS, 'svg', 'dxf', 'inf', 'col', 'stitchslop']);
+const TEXT_EXTS = new Set(['svg', 'dxf', 'stitchslop', 'json']);
+const OUT_EXTS = new Set([...DESIGN_EXTS, 'json', 'png', 'jpg', 'jpeg', 'webp', 'gif']);
+const IMAGE_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
+const extOf = (name) => (/\.([A-Za-z0-9]+)$/.exec(name)?.[1] ?? '').toLowerCase();
+const expandHome = (p) => path.resolve(String(p).replace(/^~(?=$|\/)/, os.homedir()));
+
+const sniffImage = (b) => b[0] === 0x89 && b.subarray(1, 4).toString() === 'PNG' ? 'image/png'
+  : b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff ? 'image/jpeg'
+  : b.subarray(0, 4).toString() === 'RIFF' && b.subarray(8, 12).toString() === 'WEBP' ? 'image/webp'
+  : b.subarray(0, 4).toString() === 'GIF8' ? 'image/gif'
+  : null;
+
+/** A local file, ready to hand the app: `as` "dataUrl" (default) or "text".
+ *  Returns { value, mimeType, kind, bytes, path, name } or { error }. */
+function readAttachment(file, as = 'dataUrl') {
   if (typeof file !== 'string' || !file) return { error: '`path` must be a file path.' };
-  const abs = path.resolve(file.replace(/^~(?=$|\/)/, os.homedir()));
+  if (as !== 'dataUrl' && as !== 'text') return { error: '`as` is "dataUrl" or "text".' };
+  const abs = expandHome(file);
+  const name = path.basename(abs);
   let st;
   try { st = fs.statSync(abs); } catch { return { error: `There is no file at ${abs}.` }; }
   if (!st.isFile()) return { error: `${abs} is not a file.` };
-  if (st.size > FILE_MAX_BYTES) return { error: `${abs} is ${(st.size / 1e6).toFixed(1)}MB; the limit is ${FILE_MAX_BYTES / 1e6 | 0}MB. Resize it first.` };
+  if (name.startsWith('.')) return { error: `${name} is a hidden file; the app has no use for it.` };
+  if (st.size > FILE_MAX_BYTES) return { error: `${abs} is ${(st.size / 1e6).toFixed(1)}MB; the limit is ${FILE_MAX_BYTES / 1e6 | 0}MB.` };
   const bytes = fs.readFileSync(abs);
-  const b = bytes;
-  const mimeType = b[0] === 0x89 && b.subarray(1, 4).toString() === 'PNG' ? 'image/png'
-    : b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff ? 'image/jpeg'
-    : b.subarray(0, 4).toString() === 'RIFF' && b.subarray(8, 12).toString() === 'WEBP' ? 'image/webp'
-    : b.subarray(0, 4).toString() === 'GIF8' ? 'image/gif'
-    : null;
-  if (!mimeType) {
-    return { error: `${abs} is not a PNG, JPEG, WebP or GIF image — the only kinds the app accepts here. `
-      + 'An SVG or PDF has to be exported as a PNG first.' };
+  const image = sniffImage(bytes);
+  const ext = extOf(name);
+  if (!image && !DESIGN_EXTS.has(ext)) {
+    return { error: `${name} is neither an image (PNG, JPEG, WebP, GIF) nor a design file the app reads `
+      + `(${[...DESIGN_EXTS].map((e) => `.${e}`).join(' ')}). Nothing was sent.` };
   }
-  return { dataUrl: `data:${mimeType};base64,${bytes.toString('base64')}`, mimeType, bytes: bytes.length, path: abs };
+  if (as === 'text') {
+    if (image || !TEXT_EXTS.has(ext)) return { error: `${name} is not a text file; send it as a data URL.` };
+    const text = bytes.toString('utf8');
+    if (text.includes('\u0000') || Buffer.from(text, 'utf8').length !== bytes.length) return { error: `${name} is not valid UTF-8 text.` };
+    return { value: text, mimeType: 'text/plain', kind: 'text', bytes: bytes.length, path: abs, name };
+  }
+  const mimeType = image ?? (ext === 'svg' ? 'image/svg+xml' : 'application/octet-stream');
+  return { value: `data:${mimeType};base64,${bytes.toString('base64')}`, mimeType, kind: image ? 'image' : 'design',
+    bytes: bytes.length, path: abs, name };
+}
+
+/** args["a.b"] = v, for a nested argument such as design.import's sidecar.data. */
+function setArg(args, dotted, value) {
+  const parts = String(dotted).split('.');
+  if (!parts.length || parts.length > 3 || !parts.every((p) => /^[A-Za-z_]\w*$/.test(p))) return false;
+  let o = args;
+  for (const p of parts.slice(0, -1)) {
+    if (o[p] === undefined) o[p] = {};
+    if (!o[p] || typeof o[p] !== 'object' || Array.isArray(o[p])) return false;
+    o = o[p];
+  }
+  o[parts.at(-1)] = value;
+  return true;
+}
+
+/** A name the app gave a file, made safe to write into a folder: its last
+ *  component only, not hidden, and of a type the app writes. */
+function safeFileName(name) {
+  const base = path.basename(String(name ?? ''));
+  if (!base || base === '.' || base === '..' || base.startsWith('.') || /[\u0000/\\]/.test(base)) return { error: `"${name}" is not a usable file name.` };
+  if (!OUT_EXTS.has(extOf(base))) return { error: `"${base}" is not a kind of file the app writes, so it was not saved.` };
+  return { name: base };
+}
+
+/**
+ * Write every file in an app reply into `dir`: each {name, dataUrl} anywhere
+ * in it (design.export's `files`), a top-level `dataUrl` (as `fileName`, or
+ * named after the command), and a top-level `text` when `textFile` is given
+ * (project.download). Each written file's data is replaced in the reply by
+ * `savedTo` / `savedBytes`. Never overwrites unless asked. Returns
+ * { env, saved, problems }.
+ */
+function saveOutputs(env, { dir, fileName, textFile, overwrite = false, command = 'file' } = {}) {
+  const saved = [], problems = [];
+  if (typeof dir !== 'string' || !dir) return { env, saved, problems: ['`dir` must be a folder to save into.'] };
+  const into = expandHome(dir);
+  try { fs.mkdirSync(into, { recursive: true }); } catch (e) { return { env, saved, problems: [`Could not use ${into}: ${e.message}`] }; }
+  const write = (name, buf) => {
+    const safe = safeFileName(name);
+    if (safe.error) { problems.push(safe.error); return null; }
+    const to = path.join(into, safe.name);
+    try { fs.writeFileSync(to, buf, { flag: overwrite ? 'w' : 'wx', mode: 0o644 }); }
+    catch (e) { problems.push(e.code === 'EEXIST' ? `${to} already exists; pass overwrite: true to replace it.` : `Could not write ${to}: ${e.message}`); return null; }
+    saved.push(to);
+    return to;
+  };
+  const out = structuredClone(env ?? {});
+  const walk = (o, depth, isRoot) => {
+    if (!o || typeof o !== 'object' || depth > 6) return;
+    if (Array.isArray(o)) { for (const x of o) walk(x, depth + 1, false); return; }
+    const d = parseDataUrl(o.dataUrl);
+    if (d) {
+      const name = isRoot ? (fileName ?? `${command.replace(/[^\w.-]/g, '_')}.${IMAGE_EXT[d.mimeType] ?? 'bin'}`) : o.name;
+      const to = write(name, Buffer.from(d.data, 'base64'));
+      if (to) { delete o.dataUrl; o.savedTo = to; o.savedBytes = fs.statSync(to).size; }
+    }
+    for (const [k, v] of Object.entries(o)) if (k !== 'dataUrl' && v && typeof v === 'object') walk(v, depth + 1, false);
+  };
+  walk(out, 0, true);
+  if (textFile !== undefined) {
+    if (typeof out.text !== 'string') problems.push('The reply has no `text` to save.');
+    else {
+      const to = write(textFile, Buffer.from(out.text, 'utf8'));
+      if (to) { delete out.text; out.textSavedTo = to; }
+    }
+  }
+  return { env: out, saved, problems };
+}
+
+/**
+ * Keep bulk out of the model's context. Any data URL over 2KB still in a reply
+ * (other than a top-level picture, which becomes an image block) and any string
+ * over 100,000 characters is replaced by a note of what it was and how to save it.
+ */
+function shrinkForModel(env) {
+  const walk = (v, depth) => {
+    if (typeof v === 'string') {
+      const d = v.length > 2048 && v.startsWith('data:') ? parseDataUrl(v) : null;
+      if (d) return `(${d.mimeType}, ${Math.round(d.data.length * 3 / 4).toLocaleString('en-US')} bytes, left out of this reply: call_to_files saves it.)`;
+      if (v.length > 100_000) return `(${v.length.toLocaleString('en-US')} characters, left out of this reply: call_to_files with textFile saves it.)`;
+      return v;
+    }
+    if (!v || typeof v !== 'object' || depth > 8) return v;
+    if (Array.isArray(v)) return v.map((x) => walk(x, depth + 1));
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x, depth + 1)]));
+  };
+  return walk(env, 0);
 }
 
 /**
@@ -255,8 +381,9 @@ function imageDataUrl(file) {
  *
  *   {"heard":"make that bigger","atMs":…,"selection":[…]}
  *   {"event":"disconnected"}   {"event":"connected"}
- *   {"event":"voice-on"}   {"event":"voice-off"}    the user's voice switch, on the
- *                                                   first reply and on each change
+ *   {"event":"voice-on"}   {"event":"voice-off"}    the user's voice switch: on each
+ *                                                   change, and at the start only if on
+ *                                                   (or off with a reason to pass on)
  *   {"event":"unavailable","message":"…"}          then exit 1
  *
  * While this runs the agent must not call voice.listen itself: collecting
@@ -306,7 +433,12 @@ async function runListen(first) {
       await back();
       const reported = typeof env.voiceOn === 'boolean';
       const on = reported ? env.voiceOn : true;
-      if (voiceOn === null ? reported : on !== voiceOn) await emit(voiceEvent(on, env));
+      // First reply: only what the agent can act on. Voice starts OFF, so an
+      // initial off would wake every session for nothing (the app's handoff,
+      // 2026-09-21); an off it CAN act on (voiceSupport: this browser can't do
+      // voice) still earns a line. After that, every change.
+      const first = voiceOn === null;
+      if (first ? reported && (on || !!env.voiceSupport) : on !== voiceOn) await emit(voiceEvent(on, env));
       voiceOn = on;
       const heard = Array.isArray(env.heard) ? env.heard : [];
       for (const u of heard) {
@@ -384,20 +516,22 @@ async function runClient([verb, ...rest]) {
       if (!Number.isFinite(seconds)) { log('usage: wait [SECONDS]'); process.exit(64); }
       out = await control(session, 'POST', '/wait', { seconds }, (seconds + 10) * 1000);
     } else if (verb === 'call') {
-      if (!rest[0]) { log('usage: call <COMMAND> [JSON-ARGS] [--file KEY=PATH] [--out FILE]'); process.exit(64); }
+      if (!rest[0]) { log('usage: call <COMMAND> [JSON-ARGS] [--file KEY=PATH | --file-text KEY=PATH] [--out FILE | --save DIR]'); process.exit(64); }
       let args = {};
       if (rest[1]) {
         try { args = JSON.parse(rest[1]); }
         catch (e) { log(`the args must be JSON: ${e.message}`); process.exit(64); }
       }
-      // --file image=logo.png puts that image into args.image as a data URL.
-      if (flags['--file']) {
-        const m = /^([A-Za-z_][\w]*)=(.+)$/.exec(String(flags['--file']));
-        if (!m) { log('--file takes KEY=PATH, e.g. --file image=logo.png'); process.exit(64); }
-        const img = imageDataUrl(m[2]);
-        if (img.error) { log(img.error); process.exit(64); }
-        args[m[1]] = img.dataUrl;
-        log(`attached ${img.path} (${img.mimeType}, ${img.bytes} bytes) as \`${m[1]}\``);
+      // --file image=logo.png: that file into args.image, as a data URL.
+      // --file-text text=design.stitchslop: as text. KEY may be dotted (sidecar.data).
+      for (const [flag, as] of [['--file', 'dataUrl'], ['--file-text', 'text']]) {
+        if (!flags[flag]) continue;
+        const m = /^([A-Za-z_][\w.]*)=(.+)$/.exec(String(flags[flag]));
+        if (!m) { log(`${flag} takes KEY=PATH, e.g. ${flag} ${as === 'text' ? 'text=design.stitchslop' : 'image=logo.png'}`); process.exit(64); }
+        const att = readAttachment(m[2], as);
+        if (att.error) { log(att.error); process.exit(64); }
+        if (!setArg(args, m[1], att.value)) { log(`${flag}: "${m[1]}" is not an argument name.`); process.exit(64); }
+        log(`attached ${att.path} (${att.mimeType}, ${att.bytes} bytes) as \`${m[1]}\``);
       }
       out = await control(session, 'POST', '/call', { command: rest[0], args }, CALL_TIMEOUT_MS + 10_000);
     } else {
@@ -431,6 +565,16 @@ async function runClient([verb, ...rest]) {
       log(`--out was given but "${rest[0] ?? verb}" returned no image, so nothing was written.`);
     }
   }
+  if (flags['--save'] && out.body?.ok !== false) {
+    const r = saveOutputs(out.body, { dir: flags['--save'], textFile: flags['--text-file'], overwrite: !!flags['--overwrite'], command: rest[0] ?? verb });
+    out.body = r.env;
+    for (const f of r.saved) log(`saved ${f}`);
+    for (const p of r.problems) log(p);
+    if (!r.saved.length) log(`--save was given but nothing was saved${r.problems.length ? '' : ': the reply carried no files'}.`);
+  }
+  // Stdout goes into an agent's context: a machine file as base64 is noise
+  // there. --raw prints everything.
+  if (!flags['--raw']) out.body = shrinkForModel(out.body);
   // EXIT ONLY ONCE THE WRITE HAS DRAINED. Into a pipe, Node writes
   // asynchronously and a pipe holds 64KB, so exiting on the next line cut every
   // result over 65,536 bytes: renders, the tool list, a big describe. A file is
@@ -1093,30 +1237,65 @@ const STATUS_TOOL = {
   annotations: { readOnlyHint: true },
 };
 
+const ATTACH_PROPS = {
+  path: { type: 'string', description: 'The local file. Absolute, or relative to the current directory.' },
+  fileArg: { type: 'string', description: 'Which argument receives it, e.g. "image", "data", "text", or dotted: "sidecar.data".' },
+  as: { type: 'string', enum: ['dataUrl', 'text'], description: '"dataUrl" (default), or "text" for a text file (.svg, .dxf, .stitchslop).' },
+  nameArg: { type: 'string', description: 'Also put the file\'s name into this argument, e.g. "name" or "sidecar.name".' },
+};
 const FILE_TOOL = {
   name: 'call_with_file',
-  title: 'Run an app command with a local image attached',
+  title: 'Run an app command with a local file attached',
   description:
-    'For an app command that takes an image as a data URL — today background.set\'s `image`, which is '
-    + 'also what background.digitize and emboss.fromImage work from. Do not base64 an image yourself: '
-    + 'give its `path` here and the bridge reads it, puts it into `args[fileArg]` as a data URL, and runs '
-    + '`command`. Returns that command\'s own result, exactly as calling it directly would. PNG, JPEG, '
-    + 'WebP and GIF only, recognised by content, up to 14MB; an SVG or PDF must be exported to PNG first. '
-    + 'The file\'s contents are sent to the user\'s tab, so use only a file the user pointed you at.',
+    'For an app command that takes a FILE: background.set\'s `image`, design.import\'s `data` (with `name`), '
+    + 'project.open\'s `text`. Never base64 or paste a file yourself: give its `path` and the bridge reads it, puts '
+    + 'it into `args[fileArg]` (as a data URL, or as text with `as: "text"`), optionally its file name into '
+    + '`args[nameArg]`, and runs `command`. `also` attaches up to three more, e.g. a colour sidecar as '
+    + '{"path": "logo.inf", "fileArg": "sidecar.data", "nameArg": "sidecar.name"}. Returns that command\'s own '
+    + 'result. Accepts images (PNG, JPEG, WebP, GIF, recognised by content) and the design files the app reads '
+    + `(${[...DESIGN_EXTS].map((e) => `.${e}`).join(' ')}), up to 14MB each; anything else is refused and nothing `
+    + 'is sent. The file\'s contents go to the user\'s tab, so use only a file the user pointed you at.',
   inputSchema: {
     type: 'object',
     properties: {
-      command: { type: 'string', description: 'The app command, e.g. "background.set".' },
+      command: { type: 'string', description: 'The app command, e.g. "design.import".' },
       args: { type: 'object', description: 'Its other arguments, as you would pass them directly.' },
-      fileArg: { type: 'string', description: 'Which argument receives the data URL, e.g. "image".' },
-      path: { type: 'string', description: 'The image file. Absolute, or relative to the current directory.' },
+      ...ATTACH_PROPS,
+      also: { type: 'array', maxItems: 3, description: 'More files, each {path, fileArg, as?, nameArg?}.',
+        items: { type: 'object', properties: ATTACH_PROPS, required: ['path', 'fileArg'], additionalProperties: false } },
     },
     required: ['command', 'fileArg', 'path'],
     additionalProperties: false,
   },
 };
 
-const OWN_TOOLS = [WAIT_TOOL, PAIR_TOOL, STATUS_TOOL, FILE_TOOL];
+const SAVE_TOOL = {
+  name: 'call_to_files',
+  title: 'Run an app command and save the files it returns',
+  description:
+    'For an app command that RETURNS files: design.export with `deliver: "data"` (a machine file, sometimes with a '
+    + 'colour list), project.download with `deliver: "data"` (the project as `text`: give `textFile`, e.g. '
+    + '"leaf.stitchslop"), or a render (give `fileName`, e.g. "leaf.png"). Runs `command` and writes each file into '
+    + '`dir`, under the name the app gave it, then returns the result with each file replaced by `savedTo`. Use this '
+    + 'rather than calling those commands directly: without it the file comes back as a note, because a machine file '
+    + 'as base64 is useless in a conversation. It never overwrites a file unless `overwrite` is true, writes only '
+    + 'the kinds of file the app produces, and creates `dir` if needed. Put files where the user asked.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      command: { type: 'string', description: 'The app command, e.g. "design.export".' },
+      args: { type: 'object', description: 'Its arguments, e.g. {"format": "dst", "deliver": "data"}.' },
+      dir: { type: 'string', description: 'The folder to save into. Absolute, or relative to the current directory.' },
+      fileName: { type: 'string', description: 'A name for a file the reply returns without one (a render).' },
+      textFile: { type: 'string', description: 'Save the reply\'s `text` under this name (project.download).' },
+      overwrite: { type: 'boolean', description: 'Replace files that already exist. Default false.' },
+    },
+    required: ['command', 'dir'],
+    additionalProperties: false,
+  },
+};
+
+const OWN_TOOLS = [WAIT_TOOL, PAIR_TOOL, STATUS_TOOL, FILE_TOOL, SAVE_TOOL];
 
 /** Envelope -> MCP content (§3.5): the app's sentence leads, an image becomes
  *  an image block and leaves the JSON, the transport id never reaches the model. */
@@ -1125,10 +1304,12 @@ function toContent(env) {
   const rest = { ...(env ?? {}) };
   delete rest.id;
   const img = parseDataUrl(rest.dataUrl);
-  if (img) { blocks.push({ type: 'image', data: img.data, mimeType: img.mimeType }); delete rest.dataUrl; }
+  // Only a picture is a picture. Any other data URL stays in the reply, where
+  // shrinkForModel turns it into a note saying how to save it.
+  if (img && IMAGE_EXT[img.mimeType]) { blocks.push({ type: 'image', data: img.data, mimeType: img.mimeType }); delete rest.dataUrl; }
   const say = typeof rest.say === 'string' ? rest.say : '';
   delete rest.say;
-  const json = JSON.stringify(rest, null, 1);
+  const json = JSON.stringify(shrinkForModel(rest), null, 1);
   blocks.unshift({ type: 'text', text: say ? `${say}\n\n${json}` : json });
   return blocks;
 }
@@ -1179,8 +1360,9 @@ function listenAdvice() {
     + (hasVoiceSwitch()
       ? 'This app has a voice switch, OFF by default, so do not greet yet. When `listen` prints {"event":"voice-on"}, '
         + 'the user has just switched it on to talk: then tell them in the app with voice.say, "I\'m listening. '
-        + 'Press Talk (⌥M) and speak." A first line of {"event":"voice-off"} is normal: say nothing. If it carries '
-        + '`voiceSupport`, voice cannot work in their browser: pass its `message` on in chat. '
+        + 'Press Talk (⌥M) and speak." Until then `listen` prints nothing about voice. A {"event":"voice-off"} means they '
+        + 'switched it off: say nothing. If one carries `voiceSupport`, voice cannot work in their browser: pass its '
+        + '`message` on in chat. '
       : 'Once it is running — not before — tell the user in the app with voice.say: "I\'m listening. Press Talk '
         + '(⌥M) and speak." ')
     + 'While it runs, never call voice.listen yourself.';
@@ -1290,6 +1472,7 @@ async function handleRpc(msg) {
       else if (name === PAIR_TOOL.name) result(await toolPair(args));
       else if (name === STATUS_TOOL.name) result(await toolStatus());
       else if (name === FILE_TOOL.name) result(await toolCallWithFile(args));
+      else if (name === SAVE_TOOL.name) result(await toolCallToFiles(args));
       else if (!isConnected()) {
         // isError, not a JSON-RPC error: the call was well-formed, the app simply is not there.
         result(text('No Stitch Slop tab is connected. Call `wait_for_connection` — the tab attaches on its own.', true));
@@ -1367,18 +1550,41 @@ async function toolPair(args) {
   return text(await welcomeText(already));
 }
 
-async function toolCallWithFile({ command, args = {}, fileArg, path: file } = {}) {
-  if (typeof command !== 'string' || !command) return text('`command` must name an app command, e.g. "background.set".', true);
+async function toolCallWithFile({ command, args = {}, also = [], ...first } = {}) {
+  if (typeof command !== 'string' || !command) return text('`command` must name an app command, e.g. "design.import".', true);
   if (OWN_TOOLS.some((t) => t.name === command)) return text(`${command} is this bridge's own tool, not an app command.`, true);
-  if (typeof fileArg !== 'string' || !/^[A-Za-z_]\w*$/.test(fileArg)) return text('`fileArg` must be the argument name, e.g. "image".', true);
   if (args === null || typeof args !== 'object' || Array.isArray(args)) return text('`args` must be an object.', true);
+  if (!Array.isArray(also) || also.length > 3) return text('`also` is a list of up to three more files.', true);
   if (!isConnected()) return text('No Stitch Slop tab is connected. Call `wait_for_connection` — the tab attaches on its own.', true);
-  const img = imageDataUrl(file);
-  if (img.error) return text(img.error, true);
-  const env = await callApp(command, { ...args, [fileArg]: img.dataUrl });
+  const full = structuredClone(args);
+  const notes = [];
+  for (const a of [first, ...also]) {
+    const att = readAttachment(a.path, a.as ?? 'dataUrl');
+    if (att.error) return text(`${att.error} Nothing was sent.`, true);
+    if (!setArg(full, a.fileArg, att.value)) return text(`"${a.fileArg}" is not an argument name. Nothing was sent.`, true);
+    if (a.nameArg !== undefined && !setArg(full, a.nameArg, att.name)) return text(`"${a.nameArg}" is not an argument name. Nothing was sent.`, true);
+    notes.push(`${att.path} (${att.mimeType}, ${att.bytes.toLocaleString('en-US')} bytes) as \`${a.fileArg}\``);
+  }
+  const env = await callApp(command, full);
   const content = toContent(env);
-  content[0].text = `(attached ${img.path}, ${img.mimeType}, ${img.bytes.toLocaleString('en-US')} bytes, as \`${fileArg}\`)\n\n${content[0].text}`;
+  content[0].text = `(attached ${notes.join('; ')})\n\n${content[0].text}`;
   return { content, isError: env?.ok === false };
+}
+
+async function toolCallToFiles({ command, args = {}, dir, fileName, textFile, overwrite = false } = {}) {
+  if (typeof command !== 'string' || !command) return text('`command` must name an app command, e.g. "design.export".', true);
+  if (OWN_TOOLS.some((t) => t.name === command)) return text(`${command} is this bridge's own tool, not an app command.`, true);
+  if (args === null || typeof args !== 'object' || Array.isArray(args)) return text('`args` must be an object.', true);
+  if (typeof dir !== 'string' || !dir) return text('`dir` must be the folder to save into.', true);
+  if (!isConnected()) return text('No Stitch Slop tab is connected. Call `wait_for_connection` — the tab attaches on its own.', true);
+  const env = await callApp(command, args);
+  if (env?.ok === false) return { content: toContent(env), isError: true };
+  const r = saveOutputs(env, { dir, fileName, textFile, overwrite: overwrite === true, command });
+  const head = r.saved.length ? `Saved ${r.saved.length} file${r.saved.length === 1 ? '' : 's'}:\n${r.saved.map((f) => `  ${f}`).join('\n')}`
+    : 'Nothing was saved.';
+  const content = toContent(r.env);
+  content[0].text = `${head}${r.problems.length ? `\n${r.problems.map((p) => `  ! ${p}`).join('\n')}` : ''}\n\n${content[0].text}`;
+  return { content, isError: !r.saved.length };
 }
 
 async function toolStatus() {

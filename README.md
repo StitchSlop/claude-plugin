@@ -54,12 +54,12 @@ About everything the app's commands cover:
 - change stitch types and settings, threads and colours;
 - lettering and fonts, patches, sewing order and layering;
 - trace a background image into stitches;
-- check for stitch problems.
+- check for stitch problems;
+- export a machine file (DST, PES, JEF, EXP, VP3 and more) into a folder you
+  choose, save the project, and import SVG, DXF and machine files.
 
-The list comes from the app itself, so it grows as the app does.
-
-**Not yet:** exporting a machine file, saving, importing a design, and changing
-the fabric. Do those in the app.
+The list comes from the app itself, so it grows as the app does. The fabric is
+set in the app only.
 
 ## Privacy
 

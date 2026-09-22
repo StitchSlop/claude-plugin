@@ -49,6 +49,10 @@ node "$BRIDGE" call scene.describe
 node "$BRIDGE" call params.set '{"target":{"ordinal":2},"values":{"spacing":0.4}}'
 node "$BRIDGE" call scene.render '{"width":700}' --out /tmp/design.png
 node "$BRIDGE" call background.set '{}' --file image=./logo.png
+node "$BRIDGE" call design.import '{"name":"logo.dst"}' --file data=./logo.dst
+node "$BRIDGE" call project.open '{}' --file-text text=./leaf.stitchslop
+node "$BRIDGE" call design.export '{"format":"dst","deliver":"data"}' --save ./out
+node "$BRIDGE" call project.download '{"deliver":"data"}' --save ./out --text-file leaf.stitchslop
 node "$BRIDGE" listen          # speech from the Talk button, one line each; run it under Monitor
 ```
 
@@ -58,9 +62,17 @@ node "$BRIDGE" listen          # speech from the Talk button, one line each; run
 - `--out FILE` writes a render's image to FILE and replaces `dataUrl` in the
   printed envelope with `savedTo`. Then read the file to see it. Without
   `--out`, a render is ~140 KB of base64 on stdout.
-- `--file KEY=PATH` reads an image (PNG, JPEG, WebP or GIF) and passes it as
-  `KEY`, a data URL. Never paste base64 onto a command line: a picture is
-  larger than the shell allows.
+- `--file KEY=PATH` reads a file and passes it as `KEY`, a data URL.
+  `--file-text KEY=PATH` passes it as text instead (for `.svg`, `.dxf` and
+  `.stitchslop`). `KEY` may be dotted, as in `sidecar.data`. The file must be
+  an image or a design file the app reads. Never paste base64 onto a command
+  line: a file is larger than the shell allows.
+- `--save DIR` writes every file a reply returns into `DIR`, under the app's
+  names (an export's machine file and its colour files), and prints `savedTo`
+  in their place. `--text-file NAME` also saves the reply's `text`, which is
+  what `project.download` returns. It won't overwrite without `--overwrite`.
+- Without `--save`, bulk (base64, or text over 100,000 characters) is printed as
+  a short note, not dumped into your context. `--raw` prints it all.
 - With more than one bridge running, every command needs `--port N`; it lists
   them rather than guess, because guessing would drive the wrong document.
 
