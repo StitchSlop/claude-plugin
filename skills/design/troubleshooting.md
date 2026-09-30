@@ -14,6 +14,15 @@ away. The bridge does. A wait that times out leads with it, and
 saw attempts and refused them, the site or the credential is wrong. Those need
 opposite fixes, and they look identical from the user's chair.
 
+## When the plugin's tools themselves are missing
+
+- **Only `install_runtime` and `wait_for_connection`:** there's no Node.js for
+  the bridge. Tell the user, then call `install_runtime`.
+- **None at all:** the plugin was installed after the session started, or its
+  server failed to start and Claude Code cached the failure. `/mcp` shows the
+  server's status and can reconnect it. See the design skill's §1 for where
+  the log is. The shell fallback works either way.
+
 ## What the bridge saw
 
 | `reason` | What it is | What to do |

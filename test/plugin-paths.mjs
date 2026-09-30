@@ -202,6 +202,13 @@ const c2 = await cli('call', 'scene.render', '--out', shot);
 const env2 = JSON.parse(c2.stdout || '{}');
 ok('--out writes the picture and replaces dataUrl', c2.status === 0 && fs.existsSync(shot) && !env2.dataUrl && env2.savedTo === shot && env2.savedType === 'image/png');
 ok('bad JSON args exit 64', (await cli('call', 'scene.describe', '{nope')).status === 64);
+// The shell's pair: how a running bridge takes the token from the app's line
+// without a restart.
+const paired1 = await cli('pair', 'tok_abcdef123456', '--origin', ORIGIN);
+ok('the shell can hand a running bridge a token: pair', paired1.status === 0 && JSON.parse(paired1.stdout).origin === ORIGIN, paired1.stdout.slice(0, 80));
+const paired2 = await cli('pair', 'tok_abcdef123456', '--origin', 'https://evil.example');
+ok('  ...but not for a site that is neither production nor loopback', paired2.status === 1 && JSON.parse(paired2.stdout).error === 'origin_not_allowed');
+ok('  ...and not something that is not a token', (await cli('pair', 'hello')).status === 64);
 const c3 = await cli('call', 'background.set', '{"opacity":0.3}', '--file', `image=${pngFile}`);
 const env3 = JSON.parse(c3.stdout || '{}');
 ok('--file KEY=PATH attaches an image to the call', c3.status === 0 && env3.received?.startsWith('data:image/png;base64,') && env3.opacity === 0.3);
@@ -407,14 +414,19 @@ await wait(300);
 // nowhere (the app's follow-up handoff, 2026-09-20).
 const beforeListen = textOf(await d.call('wait_for_connection', { timeoutSeconds: 5 }));
 ok('connecting to a tab with voice.listen hands over the exact listen command, config dir included',
-  /Once it is running — not before/.test(beforeListen) && beforeListen.includes(`node "${BRIDGE}" listen --port 8797 --config-dir "${fs.realpathSync(CFG)}"`) || beforeListen.includes(`node "${BRIDGE}" listen --port 8797 --config-dir "${CFG}"`) && /select:Monitor/.test(beforeListen), beforeListen.slice(-260));
+  /Once it is running — not before/.test(beforeListen) && /select:Monitor/.test(beforeListen)
+  && [fs.realpathSync(CFG), CFG].some((dir) => beforeListen.includes(`"${process.execPath}" "${BRIDGE}" listen --port 8797 --config-dir "${dir}"`)),
+  beforeListen.slice(-260));
 
 // Run EXACTLY the command the connect result handed over, not one written
 // here. A hand-written one hid a missing --config-dir.
-const handed = /^\s*node (.+ listen .*)$/m.exec(beforeListen)?.[1] ?? '';
-const handedArgs = [...handed.matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2]);
-ok('the handed-over command parses into a script and its arguments', handedArgs[0] === BRIDGE && handedArgs[1] === 'listen', handed);
-const listener = spawn('node', handedArgs);
+// The command names Node by absolute path: the agent's own shell may have no
+// `node` (Node through nvm, or the plugin's fetched runtime).
+const parseHanded = (t) => [...(/^\s*(".+ listen .*)$/m.exec(t)?.[1] ?? '').matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2]);
+const handedArgs = parseHanded(beforeListen);
+ok('the handed-over command is an absolute Node, the script, and its arguments',
+  handedArgs[0] === process.execPath && handedArgs[1] === BRIDGE && handedArgs[2] === 'listen', handedArgs.join(' '));
+const listener = spawn(handedArgs[0], handedArgs.slice(1));
 // Watched from the start: a listen that dies at once must fail the test, not
 // hang it waiting for a 'close' that already happened.
 const listenExitP = new Promise((r) => listener.on('close', (code) => r(code)));
@@ -480,8 +492,8 @@ const switchAdvice = textOf(await d.call('wait_for_connection', { timeoutSeconds
 ok('with a voice switch, the connect result says to greet on voice-on, not at once',
   /do not greet yet/.test(switchAdvice) && /"voice-on"/.test(switchAdvice) && !/Once it is running — not before/.test(switchAdvice),
   switchAdvice.slice(-220));
-const vArgs = [...(/^\s*node (.+ listen .*)$/m.exec(switchAdvice)?.[1] ?? '').matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2]);
-const vl = spawn('node', vArgs);
+const vArgs = parseHanded(switchAdvice);
+const vl = spawn(vArgs[0], vArgs.slice(1));
 const vExit = new Promise((r) => vl.on('close', (code) => r(code)));
 let vOut = '';
 vl.stdout.on('data', (c) => { vOut += c; });
@@ -504,7 +516,7 @@ for (let i = 0; i < 40 && JSON.parse(textOf(await d.call('connection_status'))).
 const t10b = await scriptedTab([{ ok: true, heard: [], voiceOn: false, voiceSupport: 'app', selection: SEL,
   say: 'Voice is not available in the app yet: it works in Google Chrome on a computer.' }, async () => { await wait(1500); return off; }],
   { voiceSwitch: true });
-const nb = spawn('node', vArgs);
+const nb = spawn(vArgs[0], vArgs.slice(1));
 const nbExit = new Promise((r) => nb.on('close', (code) => r(code)));
 let nbOut = '';
 nb.stdout.on('data', (c) => { nbOut += c; });

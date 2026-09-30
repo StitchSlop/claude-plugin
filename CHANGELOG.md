@@ -24,6 +24,15 @@ The first release.
 - **`listen`**: the Talk button's speech wakes the agent between turns. It
   reports the app's voice switch only when it's on, or can't work.
 - **Shell commands for sessions without the tools:** `status`, `tools`, `wait`,
-  `call` (with `--file`, `--file-text`, `--out`, `--save` and `--raw`) and
-  `listen`.
+  `call` (with `--file`, `--file-text`, `--out`, `--save` and `--raw`), `pair`,
+  `listen` and `install-runtime`.
 - **Skills:** `design`, for working on a design honestly, and `connect`.
+- **No Node.js needed on Claude Code's PATH.** A launcher finds Node where
+  version managers and Homebrew put it, or asks the login shell. With none at
+  all, it answers the MCP handshake itself and offers `install_runtime`. That
+  fetches the official Node.js v24.21.0 from nodejs.org, checks its pinned
+  SHA-256, and hands the same connection to the bridge, so the tools appear
+  in the session already running. `install-runtime` does the same from a
+  shell.
+- **`pair` from the shell**, to hand a running bridge the token from the app's
+  line.

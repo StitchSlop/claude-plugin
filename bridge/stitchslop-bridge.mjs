@@ -11,6 +11,7 @@
  *   node stitchslop-bridge.mjs --lazy                 as a plugin MCP server
  *   node stitchslop-bridge.mjs --origin <ORIGIN>      run by hand (token in STITCHSLOP_TOKEN)
  *   node stitchslop-bridge.mjs status | tools | wait [SECONDS]
+ *   node stitchslop-bridge.mjs pair <TOKEN> [--origin ORIGIN]     hand a running bridge a token
  *   node stitchslop-bridge.mjs call <COMMAND> [JSON-ARGS] [--port N]
  *        [--file KEY=PATH | --file-text KEY=PATH]   a local file into an argument
  *        [--out FILE]                               a picture it returns, to FILE
@@ -97,6 +98,10 @@ const PAIRING_FILE = path.join(CONFIG_DIR, 'pairing.json');
 // A comma list is for tests; the tab only ever walks the default four.
 const PORTS = flags['--port'] ? String(flags['--port']).split(',').map(Number) : DEFAULT_PORTS;
 const LAZY = !!flags['--lazy'];
+/** Set by bin/stitchslop-bridge when it has already answered the MCP handshake
+ *  itself (it had no Node.js until install_runtime fetched one) and hands this
+ *  process the same connection. */
+const INITIALIZED = !!flags['--initialized'];
 const TAKEOVER = !!flags['--takeover'];
 const IDLE_EXIT_MS = Number(flags['--idle-minutes'] ?? 30) * 60_000;
 
@@ -510,6 +515,13 @@ async function runClient([verb, ...rest]) {
   let out;
   try {
     if (verb === 'status') out = await control(session, 'GET', '/status');
+    else if (verb === 'pair') {
+      // The shell's way to hand a RUNNING bridge the token from the app's line,
+      // as the pair tool does. Without it, the only way was a restart.
+      const token = String(rest[0] ?? '').trim().replace(/[.,;]+$/, '');
+      if (!/^tok_[0-9a-f]{6,64}$/.test(token)) { log('usage: pair <TOKEN> [--origin ORIGIN], the token from the app\'s line (tok_…)'); process.exit(64); }
+      out = await control(session, 'POST', '/pair', { token, ...(flags['--origin'] ? { origin: flags['--origin'] } : {}) });
+    }
     else if (verb === 'tools') out = await control(session, 'GET', '/tools');
     else if (verb === 'wait') {
       const seconds = Number(rest[0] ?? 120);
@@ -535,7 +547,7 @@ async function runClient([verb, ...rest]) {
       }
       out = await control(session, 'POST', '/call', { command: rest[0], args }, CALL_TIMEOUT_MS + 10_000);
     } else {
-      log(`unknown command "${verb}". Try: status, tools, wait, call, listen`);
+      log(`unknown command "${verb}". Try: status, tools, wait, call, pair, listen`);
       process.exit(64);
     }
   } catch (err) {
@@ -842,9 +854,15 @@ async function onHttp(req, res) {
   // token it was given through `pair`. Same door, same key.
   if (route === '/pair') {
     if (typeof body?.token !== 'string' || !body.token) { sendJson(res, 400, { ok: false, error: 'bad_request', message: 'Send {"token":"…"}.' }); return; }
-    const o = normOrigin(body.origin ?? ORIGIN);
-    armedTokens.set(body.token, originAllowed(o) ? o : ORIGIN);
-    sendJson(res, 200, { ok: true, message: 'Token armed.' });
+    const o = normOrigin(String(body.origin ?? ORIGIN).trim().replace(/[.,;]+$/, ''));
+    if (!originAllowed(o)) {
+      sendJson(res, 400, { ok: false, error: 'origin_not_allowed',
+        message: `${o} is not the production site or a loopback address. The user can allow it by starting the bridge with STITCHSLOP_ORIGIN.` });
+      return;
+    }
+    armedTokens.set(body.token, o);
+    sendJson(res, 200, { ok: true, origin: o, port: PORT,
+      message: `Token armed for ${o}. A tab from that site holding it will attach on its next dial.` });
     return;
   }
 
@@ -1354,7 +1372,7 @@ function listenAdvice() {
   const where = path.resolve(CONFIG_DIR) === path.resolve(DEFAULT_CONFIG_DIR) ? '' : ` --config-dir "${path.resolve(CONFIG_DIR)}"`;
   return 'To hear the user\'s Talk button (⌥M), start this NOW as a background command under Monitor, and leave '
     + 'it running. It prints nothing until they speak, then one line per thing they said, and each line wakes you:\n'
-    + `  node "${SELF_PATH}" listen --port ${port}${where}\n`
+    + `  "${process.execPath}" "${SELF_PATH}" listen --port ${port}${where}\n`
     + 'Run it exactly as given.\n'
     + 'In Claude Code, Monitor may be a deferred tool: load it first with ToolSearch, query "select:Monitor". '
     + (hasVoiceSwitch()
@@ -1637,6 +1655,15 @@ function clearSession() {
 process.on('exit', clearSession);
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { log('shutting down'); process.exit(0); });
 
+if (INITIALIZED) {
+  // The launcher answered `initialize` for us and the client is ready. Take the
+  // lifecycle as an MCP-owned bridge would, and tell the client our tools
+  // changed: they replace the launcher's two.
+  mcpOwned = true;
+  clientReady = true;
+  rpc({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' });
+  log('stitchslop-bridge took over the connection from the launcher');
+}
 if (LAZY) {
   log('stitchslop-bridge ready — nothing is listening until the agent asks for the connection');
 } else {

@@ -14,5 +14,15 @@
     "stitchslop",
     "mcp"
   ],
-  "repository": "https://github.com/StitchSlop/claude-plugin"
+  "repository": "https://github.com/StitchSlop/claude-plugin",
+  "mcpServers": {
+    "app": {
+      "type": "stdio",
+      "command": "sh",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/bin/stitchslop-bridge",
+        "--lazy"
+      ]
+    }
+  }
 }

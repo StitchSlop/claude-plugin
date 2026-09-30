@@ -8,6 +8,6 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node test/plugin-paths.mjs"
+    "test": "node test/plugin-paths.mjs && node test/launcher.mjs"
   }
 }

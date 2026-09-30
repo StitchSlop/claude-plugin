@@ -6,8 +6,9 @@ has a second face for exactly this: a small authenticated HTTP control plane,
 wrapped by the same script as subcommands. Nothing needs restarting. Next
 session, the native tools will simply be there; prefer them when they are.
 
-The script's path is given in the design skill's `SKILL.md`, under "The bridge
-script". Put it in a variable:
+The launcher's path is given in the design skill's `SKILL.md`, under "The
+bridge's launcher". Put it in a variable, and run it with `sh`: it finds a
+Node.js for the bridge even when your shell has no `node`.
 
 ```
 BRIDGE="<that path>"
@@ -16,10 +17,15 @@ BRIDGE="<that path>"
 ## 1. Is a bridge already running?
 
 ```
-node "$BRIDGE" status
+sh "$BRIDGE" status
 ```
 
-Exit `0` with `"connected": true` — skip to step 3. Exit `3` — none is running.
+- Exit `0` with `"connected": true`: skip to step 3.
+- Exit `3`: none is running.
+- Exit `69`: there is no Node.js on this computer for the bridge. Tell the
+  user, then `sh "$BRIDGE" install-runtime`. It fetches the official Node.js
+  from nodejs.org (about 30 MB), checks its pinned SHA-256, and keeps it in
+  `~/.stitchslop/runtime` for this plugin only.
 
 ## 2. Start one, in the background
 
@@ -28,7 +34,14 @@ paired (then omit the variable). Pass the token in the **environment**, never as
 an argument — a command line is readable by every process on the machine.
 
 ```
-STITCHSLOP_TOKEN=tok_… node "$BRIDGE" --origin https://www.stitchslop.com
+STITCHSLOP_TOKEN=tok_… sh "$BRIDGE" --origin https://www.stitchslop.com
+```
+
+**A bridge is already running, and the user has just pasted a line?** Hand it
+the token; there is no need to restart it:
+
+```
+sh "$BRIDGE" pair tok_… --origin <the line's Origin>
 ```
 
 Run it as a background task. Use the `Origin` from the paste line. It exits by
@@ -36,7 +49,7 @@ itself after 30 minutes if no tab ever attaches, and prints its pid and how to
 stop it; stop it when the user is finished. Then:
 
 ```
-node "$BRIDGE" wait 90
+sh "$BRIDGE" wait 90
 ```
 
 parks until the tab attaches (exit `0`) or the time runs out (exit `1`).
@@ -44,21 +57,21 @@ parks until the tab attaches (exit `0`) or the time runs out (exit `1`).
 ## 3. Work
 
 ```
-node "$BRIDGE" tools                                   # the app's tool list — read the descriptions
-node "$BRIDGE" call scene.describe
-node "$BRIDGE" call params.set '{"target":{"ordinal":2},"values":{"spacing":0.4}}'
-node "$BRIDGE" call scene.render '{"width":700}' --out /tmp/design.png
-node "$BRIDGE" call background.set '{}' --file image=./logo.png
-node "$BRIDGE" call design.import '{"name":"logo.dst"}' --file data=./logo.dst
-node "$BRIDGE" call project.open '{}' --file-text text=./leaf.stitchslop
-node "$BRIDGE" call design.export '{"format":"dst","deliver":"data"}' --save ./out
-node "$BRIDGE" call project.download '{"deliver":"data"}' --save ./out --text-file leaf.stitchslop
-node "$BRIDGE" listen          # speech from the Talk button, one line each; run it under Monitor
+sh "$BRIDGE" tools                                   # the app's tool list — read the descriptions
+sh "$BRIDGE" call scene.describe
+sh "$BRIDGE" call params.set '{"target":{"ordinal":2},"values":{"spacing":0.4}}'
+sh "$BRIDGE" call scene.render '{"width":700}' --out /tmp/design.png
+sh "$BRIDGE" call background.set '{}' --file image=./logo.png
+sh "$BRIDGE" call design.import '{"name":"logo.dst"}' --file data=./logo.dst
+sh "$BRIDGE" call project.open '{}' --file-text text=./leaf.stitchslop
+sh "$BRIDGE" call design.export '{"format":"dst","deliver":"data"}' --save ./out
+sh "$BRIDGE" call project.download '{"deliver":"data"}' --save ./out --text-file leaf.stitchslop
+sh "$BRIDGE" listen          # speech from the Talk button, one line each; run it under Monitor
 ```
 
 - Stdout is the app's envelope as JSON and nothing else. Commentary is on stderr.
 - Exit `0` only when `ok` is true; `1` a refusal or a failed command; `3` no
-  bridge, or a stale session; `64` a usage error.
+  bridge, or a stale session; `64` a usage error; `69` no Node.js (see step 1).
 - `--out FILE` writes a render's image to FILE and replaces `dataUrl` in the
   printed envelope with `savedTo`. Then read the file to see it. Without
   `--out`, a render is ~140 KB of base64 on stdout.

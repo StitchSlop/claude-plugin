@@ -8,8 +8,11 @@ Fixes go into the latest release; there are no older supported versions.
 
 ## What the plugin does on your computer
 
-The plugin runs one program, `bridge/stitchslop-bridge.mjs`, as your user. It
-has no dependencies and makes no internet connections. It:
+The plugin runs one program, `bridge/stitchslop-bridge.mjs`, as your user,
+started by a small shell launcher, `bin/stitchslop-bridge`. The launcher looks
+for Node.js: on Claude Code's PATH, where version managers and Homebrew install
+it, and, as a last resort, by asking your login shell. The bridge has no
+dependencies. It:
 
 - **Listens on your computer's loopback address only** (`127.0.0.1`, the first
   free port of 8787–8790). It starts listening only when an agent asks to
@@ -31,12 +34,20 @@ has no dependencies and makes no internet connections. It:
   export or project the app returns, into the folder your agent names. It writes
   only the kinds of file the app produces, under the file's bare name (never a
   path, never a hidden file), and never overwrites unless told to.
+- **Makes one internet connection, and only if you have no Node.js and your
+  agent calls `install_runtime`.** It downloads the official Node.js v24.21.0
+  for your platform from nodejs.org (about 30 MB) and checks it against a
+  SHA-256 written into the launcher. Those checksums were taken from Node's
+  release file after checking that file's signature against a Node.js release
+  key. A download that doesn't match is deleted. The runtime is unpacked into
+  `~/.stitchslop/runtime` and used only by this plugin.
 - **Runs `listen`** as a background process while an agent is connected. It
   asks the tab for what you said with the Talk button and prints it for your
   agent. Voice is off in the app until you switch it on.
 
-It never opens a browser, never connects to anything but your own tab, runs
-nothing the page sends it, and collects no telemetry.
+Apart from that one download, it never connects to anything but your own tab.
+It never opens a browser, runs nothing the page sends it, and collects no
+telemetry.
 
 ## The boundaries, and what each one stops
 
@@ -87,6 +98,7 @@ instruction.
 ## Revoking access
 
 - Switch off **Enable Agent Connections** in the app: nothing connects.
+- Delete `~/.stitchslop/runtime` to remove a Node.js the plugin fetched.
 - Delete `~/.stitchslop/pairing.json`: every stored pairing is gone, and the
   next connection needs the pasted line again.
 - Clear Stitch Slop's site data in your browser, to forget the browser's half.

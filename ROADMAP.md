@@ -35,11 +35,10 @@ Claude Desktop.
 
 **Harden:**
 
-- [ ] Windows. The control plane's key is protected by file mode `0600`, which
-      means nothing there. Needs ACLs, a named pipe, or a plainly documented
-      weaker guarantee; also signals and paths.
-- [ ] `node` missing from `PATH`: fail with a sentence, not a spawn error.
-      Consider a single-file build.
+- [ ] Windows. The launcher is a shell script, so a `.cmd` equivalent is
+      needed. The control plane's key is protected by file mode `0600`, which
+      means nothing there: it needs ACLs, a named pipe, or a plainly
+      documented weaker guarantee. Also signals and paths.
 - [ ] Remote sessions (SSH, WSL, devcontainers, cloud) put the agent and the
       browser on different machines. Document them as unsupported, or as
       "forward port 8787" where that works.

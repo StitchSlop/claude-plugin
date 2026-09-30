@@ -7,10 +7,14 @@ is one undo step in the app, and every answer is the app's own words.
 
 ## What you need
 
-- **Claude Code**, and **Node.js 18 or newer** on your `PATH`.
+- **Claude Code.** The bridge runs on Node.js 18 or newer. If you have it,
+  even only in your terminal through nvm or Homebrew, the plugin finds it. If
+  you don't, Claude offers to fetch the official Node.js for the plugin's own
+  use: about 30 MB from nodejs.org, checked against a pinned SHA-256.
 - **Stitch Slop open in a desktop browser on the same computer.** Chrome is
   tested; Firefox connects the same way; Safari has not been tested.
-- **macOS or Linux.** Windows has not been tested yet.
+- **macOS or Linux.** Windows is not supported yet: the plugin starts through a
+  shell script.
 
 ## Install
 
@@ -73,7 +77,8 @@ Anthropic as part of your conversation, as anything you ask Claude about does.
 - **For now:** switch off **Enable Agent Connections**. Nothing connects while
   it is off.
 - **For good, on this computer:** delete `~/.stitchslop/pairing.json`. The next
-  connection needs the pasted line again.
+  connection needs the pasted line again. `~/.stitchslop/runtime` holds a Node.js
+  the plugin fetched, if it fetched one.
 - **The browser's half:** clear Stitch Slop's site data in the browser's
   settings.
 - **The plugin:** `claude plugin uninstall stitchslop@stitchslop`, or through
@@ -100,9 +105,9 @@ limits it, and how to report a problem privately.
 ## Development
 
 ```
-.claude-plugin/plugin.json        the manifest
+.claude-plugin/plugin.json        the manifest, and the MCP server it starts
 .claude-plugin/marketplace.json   makes this repo its own marketplace
-.mcp.json                         starts the bridge as an MCP server, --lazy
+bin/stitchslop-bridge             the launcher (POSIX sh): finds Node, or fetches it
 bridge/stitchslop-bridge.mjs      the bridge. Zero dependencies, Node 18+
 skills/design/                    how to connect, and how to work on a design
 skills/connect/                   /stitchslop:connect [the pasted line]

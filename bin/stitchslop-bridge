@@ -1,0 +1,282 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+#
+# Stitch Slop bridge launcher: find a Node.js to run the bridge with, or offer
+# to fetch one.
+#
+#   stitchslop-bridge --lazy               as the plugin's MCP server
+#   stitchslop-bridge <subcommand> …       status, tools, wait, call, pair, listen
+#   stitchslop-bridge install-runtime      fetch Node.js for this plugin (see below)
+#
+# WHY THIS EXISTS. The plugin used to start `node …/stitchslop-bridge.mjs`, and
+# that failed whenever `node` was not on the PATH of the Claude Code process:
+#   - no Node at all (Claude Code's native installer brings none);
+#   - Node only through nvm or similar, loaded by the interactive shell's rc
+#     file. The terminal has `node`, Claude Code does not. The spawn failed
+#     with ENOENT in 3 ms, Claude Code cached the failure, and the session had
+#     none of the plugin's tools, with nothing saying why.
+#
+# So this looks where Node is usually installed, not only on the PATH. If none
+# is found, it answers the MCP handshake itself, so the agent can explain and
+# offer `install_runtime`. That downloads the official Node.js from
+# nodejs.org, checks it against the SHA-256 pinned below, and keeps it in
+# ~/.stitchslop/runtime for this plugin only. Then it hands the same
+# connection to the bridge, so the tools appear in the session already
+# running.
+#
+# POSIX sh only: it has to work where nothing else is installed.
+
+set -u
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+BRIDGE="$(dirname "$HERE")/bridge/stitchslop-bridge.mjs"
+SELF="$HERE/$(basename "$0")"
+
+NODE_VERSION=v24.21.0
+RUNTIME_DIR=${STITCHSLOP_RUNTIME_DIR:-$HOME/.stitchslop/runtime}
+RUNTIME_BASE=${STITCHSLOP_RUNTIME_BASE:-https://nodejs.org/dist/$NODE_VERSION}
+MIN_MAJOR=18
+
+say() { printf '%s\n' "$*" >&2; }
+
+platform() {
+  case "$(uname -s)" in Darwin) os=darwin ;; Linux) os=linux ;; *) return 1 ;; esac
+  case "$(uname -m)" in arm64|aarch64) arch=arm64 ;; x86_64|amd64) arch=x64 ;; *) return 1 ;; esac
+  printf '%s-%s\n' "$os" "$arch"
+}
+
+# From https://nodejs.org/dist/v24.21.0/SHASUMS256.txt, whose signature was
+# checked against a Node.js release key (5BE8A3F6C8A5C01D106C0AD820B1A390B168D356)
+# when these were pinned.
+expected_sha256() {
+  case "$1" in
+    node-v24.21.0-darwin-arm64.tar.xz) echo 6239d4cf92d864487ec8cd3615038f7b67e7f58b77b21cd2f09ea9fbd68065fe ;;
+    node-v24.21.0-darwin-arm64.tar.gz) echo bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057 ;;
+    node-v24.21.0-darwin-x64.tar.xz)   echo 0ae5a24c24bb7d015cd816c5036b3f90f2945aa872fcf54e58da054753b3a299 ;;
+    node-v24.21.0-darwin-x64.tar.gz)   echo 1462cb3b3046b815cf8ea436d3da450ec1a9f11dac7e5a46b0ada5305d7e8097 ;;
+    node-v24.21.0-linux-arm64.tar.xz)  echo 6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2 ;;
+    node-v24.21.0-linux-arm64.tar.gz)  echo 724282c3b43aec998aa9527380465b45d229e021b58035f5f4f63095eabfe5d5 ;;
+    node-v24.21.0-linux-x64.tar.xz)    echo fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6 ;;
+    node-v24.21.0-linux-x64.tar.gz)    echo 6e1db87ef58b8819e5d5402eff1536491b18edd8eb7bee5ef7897876e88dc5ff ;;
+  esac
+}
+
+# A Node this bridge can run on: executable, and version MIN_MAJOR or newer.
+usable() {
+  [ -n "$1" ] && [ -x "$1" ] && [ ! -d "$1" ] &&
+    "$1" -e "process.exit(+process.versions.node.split('.')[0] >= $MIN_MAJOR ? 0 : 1)" >/dev/null 2>&1
+}
+
+version_of() { "$1" -p 'process.versions.node' 2>/dev/null; }
+
+# a > b, for dotted versions
+newer() {
+  awk -v a="$1" -v b="$2" 'BEGIN { split(a, x, "."); split(b, y, ".");
+    for (i = 1; i <= 3; i++) { if (x[i] + 0 > y[i] + 0) exit 0; if (x[i] + 0 < y[i] + 0) exit 1 } exit 1 }'
+}
+
+# The newest usable node among the paths given.
+newest_of() {
+  best= best_v=0
+  for n in "$@"; do
+    usable "$n" || continue
+    v=$(version_of "$n")
+    if [ -z "$best" ] || newer "$v" "$best_v"; then best=$n best_v=$v; fi
+  done
+  [ -n "$best" ] && printf '%s\n' "$best"
+}
+
+cached_runtime() {
+  p=$(platform) || return 1
+  n="$RUNTIME_DIR/node-$NODE_VERSION-$p/bin/node"
+  usable "$n" && printf '%s\n' "$n"
+}
+
+# Where Node usually lives when it is not on Claude Code's PATH.
+# STITCHSLOP_NODE_CANDIDATES (colon-separated) replaces the list: for tests.
+known_locations() {
+  if [ "${STITCHSLOP_NODE_CANDIDATES+set}" = set ]; then
+    old_ifs=$IFS; IFS=:
+    for n in $STITCHSLOP_NODE_CANDIDATES; do usable "$n" && { IFS=$old_ifs; printf '%s\n' "$n"; return 0; }; done
+    IFS=$old_ifs
+    return 1
+  fi
+  nvm=${NVM_DIR:-$HOME/.nvm}
+  # shellcheck disable=SC2086
+  n=$(newest_of "$nvm"/versions/node/v*/bin/node) && { printf '%s\n' "$n"; return 0; }
+  for n in \
+    "$HOME/.volta/bin/node" \
+    "${FNM_DIR:-$HOME/.local/share/fnm}/aliases/default/bin/node" \
+    "$HOME/Library/Application Support/fnm/aliases/default/bin/node" \
+    "$HOME/.local/share/mise/shims/node" \
+    "${ASDF_DATA_DIR:-$HOME/.asdf}/shims/node" \
+    /opt/homebrew/bin/node \
+    /usr/local/bin/node \
+    "${N_PREFIX:-/usr/local}/bin/node" \
+    "$HOME/.local/bin/node" \
+    /usr/bin/node
+  do
+    usable "$n" && { printf '%s\n' "$n"; return 0; }
+  done
+  return 1
+}
+
+# Last resort: ask the user's own shell, rc files and all, with a time limit.
+login_shell_node() {
+  s=${SHELL:-}
+  [ -n "$s" ] && [ -x "$s" ] || return 1
+  out=$(mktemp 2>/dev/null) || return 1
+  "$s" -ilc 'command -v node' </dev/null >"$out" 2>/dev/null &
+  pid=$!
+  i=0
+  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+  kill "$pid" 2>/dev/null
+  n=$(grep '^/' "$out" | tail -n 1)
+  rm -f "$out"
+  usable "$n" && printf '%s\n' "$n"
+}
+
+find_node() {
+  if [ -n "${STITCHSLOP_NODE:-}" ]; then usable "$STITCHSLOP_NODE" && { printf '%s\n' "$STITCHSLOP_NODE"; return 0; }; fi
+  n=$(command -v node 2>/dev/null) && usable "$n" && { printf '%s\n' "$n"; return 0; }
+  known_locations && return 0
+  cached_runtime && return 0
+  login_shell_node && return 0
+  return 1
+}
+
+sha256_of() {
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+  else return 1; fi
+}
+
+fetch() {
+  if command -v curl >/dev/null 2>&1; then curl -fsSL --retry 2 -o "$2" "$1"
+  elif command -v wget >/dev/null 2>&1; then wget -q -O "$2" "$1"
+  else return 1; fi
+}
+
+# Download, verify and unpack Node.js into RUNTIME_DIR. Prints the node path.
+# On failure prints why, and leaves nothing half-installed behind.
+install_runtime() {
+  n=$(cached_runtime) && { printf '%s\n' "$n"; return 0; }
+  p=$(platform) || { echo "There is no Node.js download for this system ($(uname -s) $(uname -m))."; return 1; }
+  ext=tar.xz
+  if [ "${p%%-*}" = linux ] && ! command -v xz >/dev/null 2>&1; then ext=tar.gz; fi
+  file="node-$NODE_VERSION-$p.$ext"
+  want=${STITCHSLOP_RUNTIME_SHA256:-$(expected_sha256 "$file")}
+  [ -n "$want" ] || { echo "No checksum is pinned for $file."; return 1; }
+  mkdir -p "$RUNTIME_DIR" || { echo "Could not create $RUNTIME_DIR."; return 1; }
+  tmp="$RUNTIME_DIR/.download-$$"
+  stage="$RUNTIME_DIR/.unpack-$$"
+  rm -rf "$tmp" "$stage"
+  if ! fetch "$RUNTIME_BASE/$file" "$tmp"; then
+    rm -f "$tmp"
+    echo "Could not download $RUNTIME_BASE/$file (is there a network connection, and curl or wget?)."
+    return 1
+  fi
+  got=$(sha256_of "$tmp") || { rm -f "$tmp"; echo "No shasum or sha256sum to check the download with."; return 1; }
+  if [ "$got" != "$want" ]; then
+    rm -f "$tmp"
+    echo "The download's SHA-256 did not match the pinned one, so it was discarded. Expected $want, got $got."
+    return 1
+  fi
+  mkdir -p "$stage" && tar -xf "$tmp" -C "$stage" 2>/dev/null
+  rm -f "$tmp"
+  if [ ! -d "$stage/node-$NODE_VERSION-$p" ]; then
+    rm -rf "$stage"
+    echo "The download did not unpack as expected."
+    return 1
+  fi
+  rm -rf "$RUNTIME_DIR/node-$NODE_VERSION-$p"
+  mv "$stage/node-$NODE_VERSION-$p" "$RUNTIME_DIR/" && rm -rf "$stage"
+  n=$(cached_runtime) || { echo "Node.js was unpacked but does not run here."; return 1; }
+  printf '%s\n' "$n"
+}
+
+# ------------------------------------------------------------------ dispatch --
+
+# The first word that is not a flag, as the bridge itself reads its arguments.
+first_word() {
+  skip=0
+  for a in "$@"; do
+    if [ "$skip" = 1 ]; then skip=0; continue; fi
+    case "$a" in
+      --origin|--port|--config-dir|--token|--idle-minutes|--out|--file|--file-text|--save|--text-file) skip=1 ;;
+      --*) ;;
+      *) printf '%s\n' "$a"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
+WORD=$(first_word "$@")
+
+if [ "$WORD" = install-runtime ]; then
+  if n=$(install_runtime); then say "Node.js $NODE_VERSION is ready: $n"; exit 0; fi
+  say "$n"
+  exit 1
+fi
+
+if NODE=$(find_node); then
+  exec "$NODE" "$BRIDGE" "$@"
+fi
+
+if [ -n "$WORD" ] || [ -t 0 ]; then
+  say "No Node.js $MIN_MAJOR or newer was found, and the bridge runs on it."
+  say "Either install it from https://nodejs.org (the ordinary installer), or let this plugin fetch"
+  say "the official Node.js $NODE_VERSION for its own use (about 30 MB, checked against a pinned SHA-256):"
+  say "  sh \"$SELF\" install-runtime"
+  exit 69
+fi
+
+# ------------------------------------------- MCP, until there is a runtime --
+#
+# Claude Code is waiting for an MCP handshake. Exiting would leave the session
+# without the plugin's tools, and without anything saying why. So answer it
+# here: two tools, and instructions that say what is missing. Once
+# install_runtime succeeds, `exec` hands the same stdin and stdout to the real
+# bridge, which announces its tools with notifications/tools/list_changed.
+# `read` takes a pipe a byte at a time, so nothing the client sent is lost in
+# the handover.
+
+json_str() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | awk '{ printf "%s%s", (NR > 1 ? "\\n" : ""), $0 }'; }
+field() { printf '%s' "$2" | awk -v k="$1" 'match($0, "\"" k "\"[ ]*:[ ]*(\"[^\"]*\"|-?[0-9]+)") { s = substr($0, RSTART, RLENGTH); sub(/^"[^"]*"[ ]*:[ ]*/, "", s); print s }'; }
+unquote() { printf '%s' "$1" | sed -e 's/^"//' -e 's/"$//'; }
+reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
+text_result() { reply "$1" "{\"content\":[{\"type\":\"text\",\"text\":\"$(json_str "$2")\"}]$3}"; }
+
+WHY="Stitch Slop's bridge runs on Node.js $MIN_MAJOR or newer, and Claude Code cannot find one on this computer. (A Node the terminal has through nvm or similar is looked for too; none was found.)"
+OFFER="Call install_runtime to fix it: it downloads the official Node.js $NODE_VERSION from nodejs.org (about 30 MB), checks it against a SHA-256 pinned in the plugin, and keeps it in $RUNTIME_DIR for this plugin only. Tell the user that before you call it. The Stitch Slop tools then appear in this session. If the user would rather install Node.js themselves (https://nodejs.org, the ordinary installer, not nvm), they can, and then start a new session."
+INSTRUCTIONS="$WHY $OFFER"
+
+TOOLS='[{"name":"install_runtime","title":"Fetch Node.js for the Stitch Slop bridge","description":"'"$(json_str "Downloads the official Node.js $NODE_VERSION for this computer from nodejs.org (about 30 MB), verifies its SHA-256 against the one pinned in the plugin, and unpacks it into $RUNTIME_DIR, used only by this plugin. Then starts the Stitch Slop bridge, whose tools appear in this session. Tell the user before calling it.")"'","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":true}},{"name":"wait_for_connection","title":"Connect to the user'"'"'s Stitch Slop tab","description":"'"$(json_str "Not available yet: $WHY Call install_runtime first.")"'","inputSchema":{"type":"object","properties":{},"additionalProperties":true}}]'
+
+while IFS= read -r line; do
+  method=$(unquote "$(field method "$line")")
+  id=$(field id "$line")
+  case "$method" in
+    initialize)
+      proto=$(unquote "$(field protocolVersion "$line")")
+      reply "$id" "{\"protocolVersion\":\"$(json_str "${proto:-2025-06-18}")\",\"capabilities\":{\"tools\":{\"listChanged\":true}},\"serverInfo\":{\"name\":\"stitchslop-connector\",\"version\":\"launcher (no Node.js yet)\"},\"instructions\":\"$(json_str "$INSTRUCTIONS")\"}"
+      ;;
+    ping) reply "$id" '{}' ;;
+    tools/list) reply "$id" "{\"tools\":$TOOLS}" ;;
+    tools/call)
+      name=$(unquote "$(field name "$line")")
+      if [ "$name" = install_runtime ]; then
+        if n=$(install_runtime); then
+          text_result "$id" "Installed Node.js $NODE_VERSION at $n: downloaded from nodejs.org (about 30 MB) and matched against the SHA-256 pinned in the plugin. Tell the user that, in a sentence. It is used only by this plugin, and deleting $RUNTIME_DIR removes it. The Stitch Slop bridge is starting now, and its tools will be listed in a moment. Call wait_for_connection, or pair if the user gave you a line with a token." ""
+          exec "$n" "$BRIDGE" --initialized "$@"
+        fi
+        text_result "$id" "Could not install Node.js: $n Nothing was changed. The user can install Node.js from https://nodejs.org instead, then start a new session." ',"isError":true'
+      else
+        text_result "$id" "$WHY $OFFER" ',"isError":true'
+      fi
+      ;;
+    '') ;;
+    notifications/*) ;;
+    *) [ -n "$id" ] && printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"Method not found: %s"}}\n' "$id" "$(json_str "$method")" ;;
+  esac
+done

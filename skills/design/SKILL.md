@@ -43,11 +43,15 @@ anything until they ask.
 - **When you need the line**, ask for it in these words: *"Open the ⌁ Agent
   panel, switch on Enable Agent Connections, click Copy, and paste the line to
   me."* There is no separate token button.
-- A machine that has connected before needs no line: `wait_for_connection`
-  alone reconnects it. Before telling the user nothing is saved, check
-  `connection_status`. `pairedOrigins` lists every site this machine can
-  reconnect to without a token; `paired` covers only the site the bridge is
-  serving at that moment.
+- **A line the user pasted always goes to `pair`**, even when you think this
+  machine is already paired. The browser's saved pairing and this computer's
+  can disagree, and the token is harmless when it isn't needed.
+- With no line, `wait_for_connection` usually reconnects a machine that has
+  connected before. If it reports a refusal instead, ask for the line. Before
+  telling the user nothing is saved, check `connection_status`:
+  `pairedOrigins` lists every site this machine can reconnect to without a
+  token, and `paired` covers only the site the bridge is serving at that
+  moment.
 - **If a wait times out, read what it says the bridge saw before asking the
   user anything.** The panel shows a refused tab only as "Waiting to connect",
   so the reason for a refusal is in the wait's result and in
@@ -59,16 +63,36 @@ anything until they ask.
   loopback connection. Tell them to expect it **before** it appears if this is
   their first connection. Firefox shows nothing.
 
-**The bridge script** (for `listen` below, and the shell fallback) is:
+**The bridge's launcher** (for the shell fallback, and `listen` if the connect
+result didn't give you a command) is:
 
 ```
-${CLAUDE_SKILL_DIR}/../../bridge/stitchslop-bridge.mjs
+${CLAUDE_SKILL_DIR}/../../bin/stitchslop-bridge
 ```
 
-**No `wait_for_connection` tool in this session?** The plugin was installed
-after the session started, and MCP servers only start with a session. You can
-still work, through the same bridge's shell face — see
-[shell-fallback.md](shell-fallback.md). Do not ask the user to restart.
+Run it with `sh`. It finds a Node.js to run the bridge on, including one the
+terminal has through nvm but Claude Code can't see.
+
+**Only `install_runtime` and `wait_for_connection` in the tool list?** The
+bridge runs on Node.js, and Claude Code can't find one on this computer. The
+server's instructions explain. Tell the user, then call `install_runtime`: it
+fetches the official Node.js for this plugin only, and the real tools appear
+in this same session.
+
+**No Stitch Slop tools at all?** There are two causes:
+
+- **The plugin was installed after this session started.** MCP servers only
+  start with a session. You can still work, through the bridge's shell face:
+  see [shell-fallback.md](shell-fallback.md). Don't ask the user to restart.
+- **The server failed to start, and Claude Code cached the failure.**
+  - `/mcp` shows its status, and can reconnect it.
+  - Its log is in Claude Code's MCP log folder, under `mcp-logs-plugin-stitchslop-app`:
+    on macOS in `~/Library/Caches/claude-cli-nodejs/<this project's path>/`,
+    on Linux under `~/.cache/claude-cli-nodejs/`.
+  - "Node on the PATH" means the PATH of the Claude Code process, not the
+    terminal's.
+
+  Meanwhile the shell face works here too.
 
 ## 2. The tool descriptions are the documentation
 
@@ -126,7 +150,7 @@ What the user says with the **Talk** button waits in the tab until something
 collects it, and an agent that has ended its turn collects nothing. `listen`,
 started when you connected, collects it for you: each line it prints wakes you.
 If it isn't running, start it with the command from the connect result, or
-`node "<the bridge script>" listen`.
+`sh "<the launcher>" listen`.
 
 - **On a `{"heard": …}` line**, act on it. Read "that" or "this" as its
   `selection`. **Reply with `voice.say`, short (up to 160 characters).** It
