@@ -34,8 +34,14 @@ paired (then omit the variable). Pass the token in the **environment**, never as
 an argument — a command line is readable by every process on the machine.
 
 ```
-STITCHSLOP_TOKEN=tok_… sh "$BRIDGE" --origin https://www.stitchslop.com
+STITCHSLOP_TOKEN=tok_… sh "$BRIDGE" --origin https://www.stitchslop.com --exit-when-unused 120
 ```
+
+`--exit-when-unused 120` makes it exit after two hours in which no command of
+yours has used it. Claude Code stops it when this session ends, but not after a
+crash, and without the flag it would then hold one of the four ports for good.
+If it has exited when you next need it, start it again: no token is needed once
+paired.
 
 **A bridge is already running, and the user has just pasted a line?** Hand it
 the token; there is no need to restart it:

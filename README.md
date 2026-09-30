@@ -75,7 +75,9 @@ Anthropic as part of your conversation, as anything you ask Claude about does.
 ## Turning it off
 
 - **For now:** switch off **Enable Agent Connections**. Nothing connects while
-  it is off.
+  it is off. Nothing keeps running once your Claude Code session ends: the
+  bridge frees its port and exits with the session, even after a crash, and so
+  does `listen`.
 - **For good, on this computer:** delete `~/.stitchslop/pairing.json`. The next
   connection needs the pasted line again. `~/.stitchslop/runtime` holds a Node.js
   the plugin fetched, if it fetched one.

@@ -177,7 +177,9 @@ If it isn't running, start it with the command from the connect result, or
   consumes the tab's one queue, and two collectors split the user's words
   between them.
 - **Leave it running for the whole session.** Stop it only if the user asks,
-  or when you disconnect from the tab for good.
+  or when you disconnect from the tab for good. It ends by itself when your
+  session does, even after a crash, because it is tied to your session's
+  bridge.
 - **No Monitor in this host?** Call `voice.listen` at the start of each turn
   instead, and tell the user their words are heard when you next check.
 

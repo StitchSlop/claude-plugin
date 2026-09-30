@@ -34,5 +34,10 @@ The first release.
   SHA-256, and hands the same connection to the bridge, so the tools appear
   in the session already running. `install-runtime` does the same from a
   shell.
+- **Nothing outlives its session.** The bridge exits when its session ends,
+  however it ends. `listen` is tied to its session's bridge (`--owner`), so a
+  crash no longer leaves it polling for good, where it could take a later
+  session's speech. A bridge started from a shell can exit once unused
+  (`--exit-when-unused`).
 - **`pair` from the shell**, to hand a running bridge the token from the app's
   line.

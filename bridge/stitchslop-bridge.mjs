@@ -64,7 +64,7 @@ let LISTENER_ID = null;
 // Flags that take a value are listed, not guessed: guessing from "the next word
 // does not start with --" lets `--version call …` swallow the subcommand.
 const VALUE_FLAGS = new Set(['--origin', '--port', '--config-dir', '--token', '--idle-minutes', '--out', '--file',
-  '--file-text', '--save', '--text-file']);
+  '--file-text', '--save', '--text-file', '--owner', '--exit-when-unused']);
 const flags = {};
 const words = [];
 for (let i = 2; i < process.argv.length; i++) {
@@ -104,6 +104,17 @@ const LAZY = !!flags['--lazy'];
 const INITIALIZED = !!flags['--initialized'];
 const TAKEOVER = !!flags['--takeover'];
 const IDLE_EXIT_MS = Number(flags['--idle-minutes'] ?? 30) * 60_000;
+/**
+ * A bridge an AGENT starts from its shell (the plugin's shell fallback) has no
+ * MCP client to outlive it. Claude Code stops it with the session, except after
+ * a crash. Then, once a tab had attached, the protocol's rule (never idle-exit
+ * once in use) kept it holding one of the four ports for good. With this flag
+ * it exits once nothing but its tab and `listen` has used it for that many
+ * minutes. Off by default, so a bridge a person runs by hand keeps the
+ * protocol's behaviour.
+ */
+const EXIT_WHEN_UNUSED_MS = flags['--exit-when-unused'] ? Number(flags['--exit-when-unused']) * 60_000 : 0;
+let lastUsedAt = Date.now();
 
 const log = (...a) => console.error(...a);   // stdout is the MCP stream; see §3.1
 
@@ -402,6 +413,32 @@ async function runListen(first) {
   process.on('SIGTERM', quit);
   const emit = (obj) => new Promise((resolve) => process.stdout.write(JSON.stringify(obj) + '\n', resolve));
   const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  /**
+   * A LISTENER LIVES AS LONG AS THE SESSION THAT STARTED IT.
+   *
+   * Claude Code stops its Monitor commands when a session ends normally, on
+   * SIGTERM, or when the terminal closes (SIGHUP). After a crash or a force
+   * quit (SIGKILL) it cannot, and a listener was orphaned, still polling. It
+   * never stopped, and if a later session opened a bridge on the same port it
+   * would have taken that session's speech as well. Measured 2026-09-30.
+   *
+   * `--owner` is the pid of the session's own bridge process, which the
+   * connect result puts in the command. That process always exits with its
+   * session, because its stdin closes. Without `--owner`, the owner is the
+   * bridge this listener started on. Checked every two seconds, not just
+   * between calls: a call can sit parked on the tab for 25 seconds.
+   */
+  const owner = Number(flags['--owner'] ?? first.pid);
+  const ownerGone = async () => {
+    await emit({ event: 'unavailable', message: 'The session that started this listener has ended.' });
+    process.exit(0);
+  };
+  setInterval(() => { if (!pidAlive(owner)) ownerGone(); }, 2000).unref();
+  // And a bridge that stays unreachable this long is not coming back: stop,
+  // rather than retry for ever.
+  const UNREACHABLE_GIVE_UP_MS = 10 * 60_000;
+  let unreachableSince = null;
   // The bridge can be REPLACED under us — its session ended and a following
   // one took the port over, with a new control key. Look it up again rather
   // than die with the tab still open.
@@ -427,10 +464,17 @@ async function runListen(first) {
     try {
       res = await control(session, 'POST', '/call', { command: 'voice.listen', args: { timeoutSeconds: 25 } }, 45_000);
     } catch (err) {
+      if (!pidAlive(owner)) await ownerGone();
+      unreachableSince ??= Date.now();
+      if (Date.now() - unreachableSince > UNREACHABLE_GIVE_UP_MS) {
+        await emit({ event: 'unavailable', message: 'The bridge has been unreachable for 10 minutes.' });
+        process.exit(0);
+      }
       log(`listen: the bridge on port ${session.port} did not answer (${err?.code ?? err?.message ?? err}); looking again`);
       await lost(); await pause(2000); relocate(); continue;
     }
     if (res.status === 401) { await lost(); await pause(2000); relocate(); continue; }
+    unreachableSince = null;
     const env = res.body ?? {};
 
     if (env.ok) {
@@ -828,6 +872,7 @@ async function onHttp(req, res) {
 
   const lid = Number(req.headers['x-stitchslop-listener']);
   if (Number.isInteger(lid) && lid > 0) listeners.set(lid, Date.now());
+  else lastUsedAt = Date.now();   // a listener's polling is not use
 
   if (route === '/status') { sendJson(res, 200, statusBody()); return; }
 
@@ -1372,7 +1417,7 @@ function listenAdvice() {
   const where = path.resolve(CONFIG_DIR) === path.resolve(DEFAULT_CONFIG_DIR) ? '' : ` --config-dir "${path.resolve(CONFIG_DIR)}"`;
   return 'To hear the user\'s Talk button (⌥M), start this NOW as a background command under Monitor, and leave '
     + 'it running. It prints nothing until they speak, then one line per thing they said, and each line wakes you:\n'
-    + `  "${process.execPath}" "${SELF_PATH}" listen --port ${port}${where}\n`
+    + `  "${process.execPath}" "${SELF_PATH}" listen --port ${port}${where} --owner ${process.pid}\n`
     + 'Run it exactly as given.\n'
     + 'In Claude Code, Monitor may be a deferred tool: load it first with ToolSearch, query "select:Monitor". '
     + (hasVoiceSwitch()
@@ -1678,4 +1723,11 @@ if (LAZY) {
     process.exit(0);
   }, IDLE_EXIT_MS);
   idleTimer.unref?.();
+  if (EXIT_WHEN_UNUSED_MS > 0) {
+    setInterval(() => {
+      if (mcpOwned || Date.now() - lastUsedAt < EXIT_WHEN_UNUSED_MS) return;
+      log(`nothing has used this bridge for ${EXIT_WHEN_UNUSED_MS / 60_000} minutes — exiting`);
+      process.exit(0);
+    }, Math.min(60_000, Math.max(1000, EXIT_WHEN_UNUSED_MS / 4))).unref();
+  }
 }
