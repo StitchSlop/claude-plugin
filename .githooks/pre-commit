@@ -1,0 +1,17 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+#
+# Refuse a commit that would add a secret. This repo is public: a secret that
+# is pushed has leaked, whatever is rewritten afterwards.
+#
+# Enabled per clone with:   git config core.hooksPath .githooks
+# Rules: .gitleaks.toml. A false positive is fixed there, not by skipping.
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-commit: gitleaks is not installed, so this commit was not checked for secrets." >&2
+  echo "  Install it (macOS: brew install gitleaks), then commit again." >&2
+  exit 1
+fi
+
+exec gitleaks git --pre-commit --staged --redact --no-banner --verbose \
+  --config "$(git rev-parse --show-toplevel)/.gitleaks.toml" .

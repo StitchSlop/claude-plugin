@@ -144,6 +144,21 @@ about that problem:
 | `listen` | The Talk button's speech as lines a watching host (Claude Code's Monitor) wakes on. It starts when the agent connects. |
 | Heartbeat, frame caps, a pre-auth deadline | A tab that slept must not block the next one, and nothing unauthenticated gets a buffer. |
 
+### Secrets
+
+This repo is public, so every commit is checked for secrets before it is made.
+Install [gitleaks](https://github.com/gitleaks/gitleaks), then turn the hook on
+once per clone:
+
+```
+git config core.hooksPath .githooks
+npm run secrets           # the whole history, any time
+```
+
+The rules are gitleaks's own, plus Stitch Slop's tokens and pairing secrets
+(`.gitleaks.toml`). The made-up tokens in the docs and tests are listed there
+one by one; anything else of the same shape is treated as real.
+
 ### Tests
 
 ```

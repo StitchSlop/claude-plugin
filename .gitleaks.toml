@@ -1,0 +1,32 @@
+# Secret scanning for this repo: gitleaks's own rules, plus Stitch Slop's
+# credentials. Run by .githooks/pre-commit on every commit, and by
+# `npm run secrets` over the whole history.
+
+title = "Stitch Slop plugin"
+
+[extend]
+useDefault = true
+
+# The app's one-time connection token. Real ones are exactly this shape, so it
+# is caught rather than ignored; only the made-up values below are allowed.
+[[rules]]
+id = "stitchslop-token"
+description = "A Stitch Slop one-time connection token"
+regex = '''\btok_[0-9a-f]{12}\b'''
+keywords = ["tok_"]
+
+# A pairing secret: 32 random bytes, base64url, as pairing.json stores them.
+[[rules]]
+id = "stitchslop-pairing-secret"
+description = "A Stitch Slop pairing secret"
+regex = '''(?i)["']?secrets?["']?\s*[:=]\s*\[?\s*["']([A-Za-z0-9_-]{43})["']'''
+secretGroup = 1
+keywords = ["secret"]
+
+# Made-up tokens used as examples in the docs and as test fixtures. Listed one
+# by one: anything else of the same shape is treated as real.
+[[allowlists]]
+description = "Example and fixture tokens"
+regexes = [
+  '''^tok_(1a2b3c4d5e6f|aaaaaaaaaaaa|bbbbbbbbbbbb|cccccccccccc|feedfacecafe|abcdef123456|0123456789ab|1111111111aa|2222222222bb|3333333333cc)[.,;]?$''',
+]

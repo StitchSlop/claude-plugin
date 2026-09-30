@@ -8,6 +8,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node test/plugin-paths.mjs && node test/launcher.mjs && node test/lifecycle.mjs"
+    "test": "node test/plugin-paths.mjs && node test/launcher.mjs && node test/lifecycle.mjs",
+    "secrets": "gitleaks git . --config .gitleaks.toml --redact --no-banner"
   }
 }
